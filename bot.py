@@ -8,7 +8,6 @@ TG_CHAT = os.getenv("TELEGRAM_CHAT_ID")
 IS_SUMMARY = os.getenv("SUMMARY") == "1"
 
 COINGECKO_ID = "pyth-network"
-BINANCE_SYMBOL = "PYTHUSDT"
 PRICE_ALERT_PCT = 4.0
 UNLOCK_DATE = datetime(2027, 5, 19, tzinfo=timezone.utc)
 
@@ -45,47 +44,44 @@ def get_market():
     except Exception as e:
         print(f"CG err {e}")
 
-    # 2. Binance 24hr
+    # 2. Bybit (działa w US) - zamiennik Binance
     if price is None:
         try:
-            r = requests.get(f"https://api.binance.com/api/v3/ticker/24hr?symbol={BINANCE_SYMBOL}", timeout=10, headers=headers)
-            print(f"Binance 24hr status {r.status_code}")
+            r = requests.get("https://api.bybit.com/v5/market/tickers?category=spot&symbol=PYTHUSDT", timeout=10, headers=headers)
+            print(f"Bybit status {r.status_code}")
             j = r.json()
-            if isinstance(j, dict) and 'lastPrice' in j:
-                price = float(j['lastPrice'])
-                chg = float(j['priceChangePercent'])
-                vol = float(j['quoteVolume'])
-                print(f"Binance 24hr OK {price}")
+            t = j.get('result',{}).get('list',[{}])[0]
+            if t:
+                price = float(t['lastPrice'])
+                chg = float(t['price24hPcnt'])*100
+                vol = float(t['turnover24h'])
+                print(f"Bybit OK {price}")
         except Exception as e:
-            print(f"Binance 24hr err {e}")
+            print(f"Bybit err {e}")
 
-    # 3. Ostateczny fallback - cena + market_chart
+    # 3. OKX fallback
     if price is None:
         try:
-            r = requests.get(f"https://api.binance.com/api/v3/ticker/price?symbol={BINANCE_SYMBOL}", timeout=10, headers=headers)
-            print(f"Binance price status {r.status_code} body {r.text[:200]}")
+            r = requests.get("https://www.okx.com/api/v5/market/ticker?instId=PYTH-USDT", timeout=10, headers=headers)
             j = r.json()
-            price = float(j['price'])
-            try:
-                r2 = requests.get(f"https://api.coingecko.com/api/v3/coins/{COINGECKO_ID}/market_chart?vs_currency=usd&days=1", timeout=10, headers=headers)
-                if r2.status_code == 200:
-                    prices = r2.json().get('prices', [])
-                    if len(prices) >= 2:
-                        old = prices[0][1]
-                        chg = (price - old) / old * 100 if old else 0
-            except: pass
-            print(f"Binance price fallback {price}")
+            d = j.get('data',[{}])[0]
+            price = float(d['last'])
+            chg = ((float(d['last'])-float(d['open24h']))/float(d['open24h'])*100) if float(d['open24h'])>0 else 0
+            vol = float(d['volCcy24h'])*price
+            print(f"OKX OK {price}")
         except Exception as e:
-            print(f"Final fallback err {e}")
+            print(f"OKX err {e}")
             return None, 0, 0, 0, 1.0
 
+    # Vol spike z Bybit klines
     try:
-        k = requests.get(f"https://api.binance.com/api/v3/klines?symbol={BINANCE_SYMBOL}&interval=1h&limit=26", timeout=10, headers=headers).json()
-        last = float(k[-1][5])
-        avg = sum(float(x[5]) for x in k[:-1]) / 25
-        vol_mult = last/avg if avg > 0 else 1.0
-    except Exception as e:
-        print(f"klines err {e}")
+        r = requests.get("https://api.bybit.com/v5/market/kline?category=spot&symbol=PYTHUSDT&interval=60&limit=26", timeout=10, headers=headers).json()
+        kl = r.get('result',{}).get('list',[])[::-1]
+        if len(kl)>=26:
+            last = float(kl[-1][5])
+            avg = sum(float(x[5]) for x in kl[:-1])/25
+            vol_mult = last/avg if avg>0 else 1.0
+    except: pass
 
     return price, chg, vol, mcap, vol_mult
 
