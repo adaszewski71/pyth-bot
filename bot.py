@@ -57,4 +57,4 @@ elif news_title:
 elif abs(change) >= 4.0:
     d = "POMPA 📈" if change > 0 else "ZJAZD 📉"
     send_both(f"⚠️ PYTH {d}: {change:+.2f}%\nTeraz {price:.5f}$ H:{high:.5f} L:{low:.5f}")
-    send_both(f"TEST FINALNY PYTH {price:.5f}$ dziala bezpiecznie!")
+   send_both(f"TEST PYTH {price:.5f}$ - dziala!")
