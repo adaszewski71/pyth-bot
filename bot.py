@@ -25,10 +25,13 @@ def send(msg):
 
 def get_market():
     price, chg, vol, mcap, vol_mult = None, 0, 0, 0, 1.0
+    headers = {"User-Agent":"Mozilla/5.0"}
+
+    # 1. CoinGecko
     try:
         r = requests.get(
             f"https://api.coingecko.com/api/v3/simple/price?ids={COINGECKO_ID}&vs_currencies=usd&include_24hr_change=true&include_24hr_vol=true&include_market_cap=true",
-            timeout=15, headers={"User-Agent":"Mozilla/5.0"}
+            timeout=15, headers=headers
         )
         if r.status_code == 200 and r.text:
             j = r.json()
@@ -38,26 +41,52 @@ def get_market():
                 chg = cg.get('usd_24h_change', 0)
                 vol = cg.get('usd_24h_vol', 0)
                 mcap = cg.get('usd_market_cap', 0)
+                print(f"CG OK {price}")
     except Exception as e:
         print(f"CG err {e}")
 
+    # 2. Binance 24hr
     if price is None:
         try:
-            t = requests.get(f"https://api.binance.com/api/v3/ticker/24hr?symbol={BINANCE_SYMBOL}", timeout=10).json()
-            price = float(t['lastPrice'])
-            chg = float(t['priceChangePercent'])
-            vol = float(t['quoteVolume'])
-            print(f"Fallback Binance {price}")
+            r = requests.get(f"https://api.binance.com/api/v3/ticker/24hr?symbol={BINANCE_SYMBOL}", timeout=10, headers=headers)
+            print(f"Binance 24hr status {r.status_code}")
+            j = r.json()
+            if isinstance(j, dict) and 'lastPrice' in j:
+                price = float(j['lastPrice'])
+                chg = float(j['priceChangePercent'])
+                vol = float(j['quoteVolume'])
+                print(f"Binance 24hr OK {price}")
         except Exception as e:
-            print(f"Binance err {e}")
+            print(f"Binance 24hr err {e}")
+
+    # 3. Ostateczny fallback - cena + market_chart
+    if price is None:
+        try:
+            r = requests.get(f"https://api.binance.com/api/v3/ticker/price?symbol={BINANCE_SYMBOL}", timeout=10, headers=headers)
+            print(f"Binance price status {r.status_code} body {r.text[:200]}")
+            j = r.json()
+            price = float(j['price'])
+            try:
+                r2 = requests.get(f"https://api.coingecko.com/api/v3/coins/{COINGECKO_ID}/market_chart?vs_currency=usd&days=1", timeout=10, headers=headers)
+                if r2.status_code == 200:
+                    prices = r2.json().get('prices', [])
+                    if len(prices) >= 2:
+                        old = prices[0][1]
+                        chg = (price - old) / old * 100 if old else 0
+            except: pass
+            print(f"Binance price fallback {price}")
+        except Exception as e:
+            print(f"Final fallback err {e}")
             return None, 0, 0, 0, 1.0
 
     try:
-        k = requests.get(f"https://api.binance.com/api/v3/klines?symbol={BINANCE_SYMBOL}&interval=1h&limit=26", timeout=10).json()
+        k = requests.get(f"https://api.binance.com/api/v3/klines?symbol={BINANCE_SYMBOL}&interval=1h&limit=26", timeout=10, headers=headers).json()
         last = float(k[-1][5])
         avg = sum(float(x[5]) for x in k[:-1]) / 25
-        vol_mult = last/avg if avg>0 else 1.0
-    except: pass
+        vol_mult = last/avg if avg > 0 else 1.0
+    except Exception as e:
+        print(f"klines err {e}")
+
     return price, chg, vol, mcap, vol_mult
 
 def get_coinglass():
@@ -174,7 +203,6 @@ if IS_SUMMARY:
     send(msg)
     exit(0)
 
-# Alerty co 5 min
 if abs(chg_24) >= PRICE_ALERT_PCT:
     send(f"⚠️ *PYTH CENA {chg_24:+.1f}%*\n{price:.4f}$ Vol x{vol_mult:.1f} | TVS ${tvs/1e9:.2f}B" if tvs else f"⚠️ *PYTH CENA {chg_24:+.1f}%* {price:.4f}$")
 
