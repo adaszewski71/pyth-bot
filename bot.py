@@ -3,7 +3,7 @@ import requests, statistics, os, json, time
 PHONE = "48668873755"
 APIKEY = "1212249"
 STATE_FILE = "last_alert.json"
-
+##
 def load_state():
     if os.path.exists(STATE_FILE):
         try:
