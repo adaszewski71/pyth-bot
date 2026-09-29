@@ -54,3 +54,6 @@ elif news_title:
 elif abs(change) >= 4.0:
     direction = "POMPA 📈" if change > 0 else "ZJAZD 📉"
     send(f"⚠️ PYTH {direction}: {change:+.2f}% | Teraz {price:.5f}$ | H:{high:.5f} L:{low:.5f}")
+
+# === TEST TERAZ ===
+send(f"✅ TEST Z GITHUBA DZIALA: PYTH {price:.5f}$ ({change:+.2f}%)")
