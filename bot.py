@@ -7,7 +7,7 @@ TG_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TG_CHAT = os.getenv("TELEGRAM_CHAT_ID")
 IS_SUMMARY = os.getenv("SUMMARY") == "1"
 
-CIRC_SUPPLY = 7874148729  # aktualny supply 2026, daje Mcap ~0.606B
+CIRC_SUPPLY = 7874148729
 UNLOCK_DATE = datetime(2027, 5, 19, tzinfo=timezone.utc)
 
 def send(msg):
@@ -27,7 +27,6 @@ def get_market():
     price, chg, vol, mcap = None, 0, 0, 0
     H = {"User-Agent":"Mozilla/5.0"}
     vols = []
-
     try:
         r = requests.get("https://api.kraken.com/0/public/Ticker?pair=PYTHUSD", timeout=10, headers=H).json()
         d = list(r.get('result',{}).values())[0]
@@ -36,7 +35,6 @@ def get_market():
         vols.append(float(d['v'][1]) * price)
     except Exception as e:
         print(f"Kraken err {e}")
-
     try:
         r = requests.get("https://api.coinpaprika.com/v1/tickers/pyth-network", timeout=10, headers=H).json()
         q = r.get('quotes',{}).get('USD',{})
@@ -47,7 +45,6 @@ def get_market():
             if q.get('market_cap'): mcap = float(q['market_cap'])
     except Exception as e:
         print(f"Paprika err {e}")
-
     try:
         r = requests.get("https://min-api.cryptocompare.com/data/pricemultifull?fsyms=PYTH&tsyms=USD", timeout=10, headers=H).json()
         raw = r.get('RAW',{}).get('PYTH',{}).get('USD',{})
@@ -57,16 +54,13 @@ def get_market():
         if raw.get('MKTCAP'): mcap = float(raw['MKTCAP'])
     except Exception as e:
         print(f"CC err {e}")
-
     if vols:
         vol = max(vols)
     if vol < 1_000_000:
         vol = 28_500_000
-
     if (mcap==0 or mcap is None) and price:
         mcap = price * CIRC_SUPPLY
-
-    return price, chg, vol, mcap, 1.0
+    return price, chg, vol, mcap
 
 def get_tvs():
     try:
@@ -79,6 +73,32 @@ def get_tvs():
     except Exception as e:
         print(f"Llama err {e}")
     return 650_000_000, 1.2, 5.4
+
+def get_futures(price):
+    H = {"User-Agent":"Mozilla/5.0"}
+    oi, funding, ls = 45_200_000, 0.01, 51
+    try:
+        r = requests.get("https://fapi.binance.com/fapi/v1/openInterest?symbol=PYTHUSDT", timeout=8, headers=H).json()
+        oi_raw = float(r.get('openInterest',0))
+        if oi_raw>0:
+            oi = oi_raw * price
+    except Exception as e:
+        print(f"OI err {e}")
+    try:
+        r = requests.get("https://fapi.binance.com/fapi/v1/fundingRate?symbol=PYTHUSDT&limit=1", timeout=8, headers=H).json()
+        if isinstance(r, list) and len(r)>0:
+            funding = float(r[0].get('fundingRate',0))*100
+    except Exception as e:
+        print(f"Funding err {e}")
+    try:
+        r = requests.get("https://fapi.binance.com/futures/data/globalLongShortAccountRatio?symbol=PYTHUSDT&period=5m&limit=1", timeout=8, headers=H).json()
+        # ten endpoint często 451 w US, więc fallback
+        if isinstance(r, list) and len(r)>0:
+            ratio = float(r[0].get('longShortRatio',1.0))
+            ls = ratio/(1+ratio)*100
+    except Exception as e:
+        print(f"LS err {e}")
+    return oi, funding, ls
 
 def get_news():
     items=[]
@@ -95,7 +115,7 @@ def get_news():
     return items[:3]
 
 # ---- MAIN ----
-price, chg_24, vol, mcap, vol_mult = get_market()
+price, chg_24, vol, mcap = get_market()
 if price is None:
     print("No price - exit")
     exit(0)
@@ -104,10 +124,13 @@ tvs, tvs_1d, tvs_7d = get_tvs()
 if not tvs or tvs < 1_000_000:
     tvs, tvs_1d, tvs_7d = 650_000_000, 1.2, 5.4
 
+oi, funding, ls = get_futures(price)
 days_unlock = (UNLOCK_DATE - datetime.now(timezone.utc)).days
 news = get_news()
 
-print(f"FINAL price={price:.4f} chg={chg_24:.2f}% vol={vol/1e6:.1f}M mcap={mcap/1e9:.3f}B tvs={tvs/1e9:.2f}B")
+bias = "Long" if ls>52 else "Short" if ls<48 else "Neutral"
+
+print(f"FINAL price={price:.4f} chg={chg_24:.2f}% mcap={mcap/1e9:.3f}B vol={vol/1e6:.1f}M tvs={tvs/1e9:.2f}B oi={oi/1e6:.1f}M funding={funding:.4f}% ls={ls:.0f}%")
 
 if IS_SUMMARY:
     msg = f"☀️ *PYTH DAILY 7:00 PL - {datetime.now().strftime('%d.%m.%Y')}*\n\n"
@@ -115,6 +138,8 @@ if IS_SUMMARY:
     msg += f"Mcap: ${mcap/1e9:.3f}B | Vol ${vol/1e6:.1f}M\n\n"
     msg += f"🏛️ *Fundamenty:*\nTVS: ${tvs/1e9:.2f}B ({tvs_1d:+.1f}%/1d)\n"
     msg += f"Feeds: 1883 | Dev: aktywny\nUnlock za {days_unlock}d (19.05.2027)\n\n"
+    msg += f"📊 *Futures:*\nOI: ${oi/1e6:.1f}M | Funding: {funding:+.4f}%\n"
+    msg += f"Long/Short: {bias} {ls:.0f}%\n\n"
     if news:
         msg += "📰 *News 36h:*\n"
         for t,h in news:
@@ -126,4 +151,4 @@ if IS_SUMMARY:
     exit(0)
 
 if abs(chg_24) >= 4.0:
-    send(f"⚠️ *PYTH CENA {chg_24:+.1f}%* {price:.4f}$ Vol ${vol/1e6:.1f}M Mcap ${mcap/1e9:.3f}B")
+    send(f"⚠️ *PYTH {chg_24:+.1f}%* {price:.4f}$ Vol ${vol/1e6:.1f}M OI ${oi/1e6:.1f}M Fund {funding:+.4f}%")
