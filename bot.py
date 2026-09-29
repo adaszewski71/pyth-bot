@@ -5,7 +5,7 @@ import urllib.parse
 PHONE = "48668873755"
 APIKEY = "1212249"
 TELEGRAM_TOKEN = "8982367160:AAFCnbku93EC6JzNB9WBqofsNVUvDuOjjRQ"
-TELEGRAM_CHAT_ID = "39760226"
+TELEGRAM_CHAT_ID = "7753874129"
 
 NEGATIVE_WORDS = ["hack", "exploit", "lawsuit", "sec", "crash", "down", "fall", "dump", "scam", "vulnerability", "attack", "delist", "breach", "fraud"]
 
@@ -15,7 +15,6 @@ def send_whatsapp(msg):
         url = f"https://api.callmebot.com/whatsapp.php?phone={PHONE}&text={text_enc}&apikey={APIKEY}"
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"}
         requests.get(url, headers=headers, timeout=20)
-        print(f"WA wyslano")
     except Exception as e:
         print(f"WA blad: {e}")
 
@@ -24,7 +23,6 @@ def send_telegram(msg):
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         data = {"chat_id": TELEGRAM_CHAT_ID, "text": msg}
         requests.post(url, data=data, timeout=10)
-        print(f"TG wyslano")
     except Exception as e:
         print(f"TG blad: {e}")
 
@@ -63,5 +61,3 @@ elif news_title:
 elif abs(change) >= 4.0:
     direction = "POMPA 📈" if change > 0 else "ZJAZD 📉"
     send_both(f"⚠️ PYTH {direction}: {change:+.2f}%\nTeraz {price:.5f}$ H:{high:.5f} L:{low:.5f}")
-else:
-    print("Brak alertu - spokojnie")
