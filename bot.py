@@ -50,9 +50,6 @@ def get_news():
 price, change, high, low = get_data()
 news_title, news_lower = get_news()
 
-# TEST - usun po tescie
-send_both(f"TEST PYTH {price:.5f}$ - dziala!")
-
 if news_title and any(w in news_lower for w in NEGATIVE_WORDS):
     send_both(f"🚨 PYTH ZLE NEWS: {news_title}\nCena {price:.5f}$ ({change:+.2f}%)")
 elif news_title:
