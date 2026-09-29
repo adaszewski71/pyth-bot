@@ -1,52 +1,73 @@
-import requests, os, urllib.parse
-from datetime import datetime, timezone
+import requests, os, feedparser, time
+from datetime import datetime, timedelta
 
-PHONE = os.environ.get("PHONE")
-APIKEY = os.environ.get("APIKEY")
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+PHONE = os.getenv("PHONE")
+APIKEY = os.getenv("APIKEY")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-NEGATIVE_WORDS = ["hack", "exploit", "lawsuit", "sec", "crash", "down", "fall", "dump", "scam", "vulnerability", "attack", "delist", "breach", "fraud"]
+NEGATIVE_WORDS = ["hack","exploit","scam","crash","lawsuit","sec","ban","downgrade","vulnerability","attack","breach","fraud"]
 
-def send_whatsapp(msg):
+RSS_SOURCES = [
+    "https://news.google.com/rss/search?q=PYTH+Network+crypto&hl=en-US&gl=US&ceid=US:en",
+    "https://cointelegraph.com/rss/tag/pyth",
+    "https://www.coindesk.com/tag/pyth-network/rss/",
+    "https://cryptonews.com/news/feed/",
+    "https://decrypt.co/feed",
+    "https://www.coinspeaker.com/tag/pyth-network/feed/"
+]
+
+def send_both(msg):
     try:
-        text_enc = urllib.parse.quote(msg[:900])
-        url = f"https://api.callmebot.com/whatsapp.php?phone={PHONE}&text={text_enc}&apikey={APIKEY}"
-        headers = {"User-Agent": "Mozilla/5.0 Chrome/120.0.0.0 Safari/537.36"}
-        requests.get(url, headers=headers, timeout=20)
+        # WhatsApp
+        requests.get(f"https://api.callmebot.com/whatsapp.php?phone={PHONE}&text={requests.utils.quote(msg)}&apikey={APIKEY}", timeout=10)
     except Exception as e:
-        print(f"WA blad: {e}")
-
-def send_telegram(msg):
+        print(f"WA error {e}")
     try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": msg}, timeout=10)
+        # Telegram
+        requests.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage?chat_id={TELEGRAM_CHAT_ID}&text={requests.utils.quote(msg)}", timeout=10)
     except Exception as e:
-        print(f"TG blad: {e}")
-
-def send_both(m):
-    send_whatsapp(m)
-    send_telegram(m)
+        print(f"TG error {e}")
 
 def get_data():
-    r = requests.get("https://api.exchange.coinbase.com/products/PYTH-USD/stats", timeout=10).json()
-    price = float(r['last'])
-    open_p = float(r.get('open', price))
-    ch = ((price - open_p) / open_p * 100) if open_p else 0
-    return price, ch, float(r.get('high', price)), float(r.get('low', price))
+    try:
+        r = requests.get("https://api.coingecko.com/api/v3/coins/pyth-network?localization=false", timeout=15).json()
+        price = r['market_data']['current_price']['usd']
+        change = r['market_data']['price_change_percentage_24h']
+        high = r['market_data']['high_24h']['usd']
+        low = r['market_data']['low_24h']['usd']
+        return price, change, high, low
+    except:
+        # fallback binance
+        r = requests.get("https://api.binance.com/api/v3/ticker/24hr?symbol=PYTHUSDT", timeout=10).json()
+        return float(r['lastPrice']), float(r['priceChangePercent']), float(r['highPrice']), float(r['lowPrice'])
 
 def get_news():
-    try:
-        resp = requests.get("https://min-api.cryptocompare.com/data/v2/news/?lang=EN&feeds=cryptocompare,coindesk,cointelegraph&extraParams=pythbot", timeout=10).json()
-        now = datetime.now(timezone.utc).timestamp()
-        for n in resp.get('Data', [])[:20]:
-            t = n.get('title','')
-            if 'PYTH' in t.upper() and now - n.get('published_on',0) < 10800:
-                return t, t.lower()
-        return None, None
-    except:
-        return None, None
+    all_news = []
+    for rss_url in RSS_SOURCES:
+        try:
+            feed = feedparser.parse(rss_url)
+            for entry in feed.entries[:5]:
+                title = entry.title
+                lower = title.lower()
+                # tylko newsy o PYTH w ostatnich 24h i zawierające pyth
+                if "pyth" in lower or "pyth" in entry.get('description','').lower():
+                    published = entry.get('published_parsed')
+                    if published:
+                        dt = datetime(*published[:6])
+                        if datetime.utcnow() - dt > timedelta(hours=24):
+                            continue
+                    all_news.append((title, lower, rss_url))
+        except Exception as e:
+            print(f"RSS fail {rss_url}: {e}")
+            continue
 
+    if not all_news:
+        return None, ""
+    # najnowszy
+    return all_news[0][0], all_news[0][1]
+
+# MAIN
 price, change, high, low = get_data()
 news_title, news_lower = get_news()
 
