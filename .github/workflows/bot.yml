@@ -1,11 +1,12 @@
-name: PYTH Bot
+name: pyth-bot
 on:
   schedule:
-    - cron: '*/5 * * * *'
+    - cron: '*/5 * * * *' # co 5 min - stare alerty
+    - cron: '0 5 * * *' # 5:00 UTC = 7:00 PL - podsumowanie
   workflow_dispatch:
 
 jobs:
-  check:
+  run:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -13,10 +14,20 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install requests feedparser
-      - name: Run bot
+      - name: Run normal alerts
+        if: github.event.schedule!= '0 5 * * *'
         env:
           PHONE: ${{ secrets.PHONE }}
           APIKEY: ${{ secrets.APIKEY }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python bot.py
+      - name: Run daily summary 7:00 PL
+        if: github.event.schedule == '0 5 * * *'
+        env:
+          PHONE: ${{ secrets.PHONE }}
+          APIKEY: ${{ secrets.APIKEY }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SUMMARY: "1"
         run: python bot.py
