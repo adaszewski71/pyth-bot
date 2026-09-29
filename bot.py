@@ -68,3 +68,4 @@ elif abs(change) >= 4.0:
     send(f"⚠️ PYTH {direction}: {change:+.2f}% | Teraz {price:.5f}$ | H:{high:.5f} L:{low:.5f}")
 else:
     print("Brak alertu - spokojnie")
+    send(f"✅ PYTH bot naprawiony! Proxy dziala. Cena {price:.5f}$")
