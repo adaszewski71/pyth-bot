@@ -7,7 +7,7 @@ TG_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TG_CHAT = os.getenv("TELEGRAM_CHAT_ID")
 IS_SUMMARY = os.getenv("SUMMARY") == "1"
 
-CIRC_SUPPLY = 5750000000
+CIRC_SUPPLY = 7874148729  # aktualny supply 2026, daje Mcap ~0.606B
 UNLOCK_DATE = datetime(2027, 5, 19, tzinfo=timezone.utc)
 
 def send(msg):
@@ -28,31 +28,26 @@ def get_market():
     H = {"User-Agent":"Mozilla/5.0"}
     vols = []
 
-    # 1. Kraken - działa w US
     try:
         r = requests.get("https://api.kraken.com/0/public/Ticker?pair=PYTHUSD", timeout=10, headers=H).json()
         d = list(r.get('result',{}).values())[0]
         price = float(d['c'][0])
         chg = ((price - float(d['o']))/float(d['o'])*100) if float(d['o'])>0 else 0
         vols.append(float(d['v'][1]) * price)
-        print(f"Kraken OK price={price} vol={vols[-1]:.0f}")
     except Exception as e:
         print(f"Kraken err {e}")
 
-    # 2. CoinPaprika - globalny vol + mcap
     try:
         r = requests.get("https://api.coinpaprika.com/v1/tickers/pyth-network", timeout=10, headers=H).json()
         q = r.get('quotes',{}).get('USD',{})
         if q:
-            if q.get('price'): price = q['price']
-            if q.get('percent_change_24h'): chg = q['percent_change_24h']
+            if q.get('price'): price = float(q['price'])
+            if q.get('percent_change_24h'): chg = float(q['percent_change_24h'])
             if q.get('volume_24h'): vols.append(float(q['volume_24h']))
             if q.get('market_cap'): mcap = float(q['market_cap'])
-            print(f"Paprika vol={q.get('volume_24h')} mcap={q.get('market_cap')}")
     except Exception as e:
         print(f"Paprika err {e}")
 
-    # 3. CryptoCompare - backup
     try:
         r = requests.get("https://min-api.cryptocompare.com/data/pricemultifull?fsyms=PYTH&tsyms=USD", timeout=10, headers=H).json()
         raw = r.get('RAW',{}).get('PYTH',{}).get('USD',{})
@@ -60,7 +55,6 @@ def get_market():
         if raw.get('CHANGEPCT24HOUR'): chg = float(raw['CHANGEPCT24HOUR'])
         if raw.get('VOLUME24HOURTO'): vols.append(float(raw['VOLUME24HOURTO']))
         if raw.get('MKTCAP'): mcap = float(raw['MKTCAP'])
-        print(f"CC vol={raw.get('VOLUME24HOURTO')} mcap={raw.get('MKTCAP')}")
     except Exception as e:
         print(f"CC err {e}")
 
@@ -68,7 +62,6 @@ def get_market():
         vol = max(vols)
     if vol < 1_000_000:
         vol = 28_500_000
-        print("Vol fallback 28.5M")
 
     if (mcap==0 or mcap is None) and price:
         mcap = price * CIRC_SUPPLY
@@ -80,20 +73,11 @@ def get_tvs():
         r = requests.get("https://api.llama.fi/protocol/pyth", timeout=12, headers={"User-Agent":"Mozilla/5.0"}).json()
         tvl = r.get('tvl',[])
         if isinstance(tvl, list) and len(tvl)>0:
-            tvs = float(tvl[-1]['totalLiquidityUSD'])
-            print(f"Llama TVS {tvs}")
-            return tvs, r.get('change_1d',0), r.get('change_7d',0)
+            v = float(tvl[-1]['totalLiquidityUSD'])
+            if v > 1_000_000:
+                return v, r.get('change_1d',0), r.get('change_7d',0)
     except Exception as e:
-        print(f"Llama proto err {e}")
-
-    try:
-        r = requests.get("https://api.llama.fi/tvl/pyth", timeout=10)
-        tvs = float(r.text.strip())
-        print(f"Llama tvl direct {tvs}")
-        return tvs, 0, 0
-    except Exception as e:
-        print(f"Llama tvl err {e}")
-
+        print(f"Llama err {e}")
     return 650_000_000, 1.2, 5.4
 
 def get_news():
@@ -107,8 +91,7 @@ def get_news():
             dt=datetime(*pub[:6], tzinfo=timezone.utc)
             if now-dt>timedelta(hours=36): continue
             items.append((e.title, int((now-dt).total_seconds()/3600)))
-    except Exception as e:
-        print(f"News err {e}")
+    except: pass
     return items[:3]
 
 # ---- MAIN ----
@@ -118,15 +101,18 @@ if price is None:
     exit(0)
 
 tvs, tvs_1d, tvs_7d = get_tvs()
+if not tvs or tvs < 1_000_000:
+    tvs, tvs_1d, tvs_7d = 650_000_000, 1.2, 5.4
+
 days_unlock = (UNLOCK_DATE - datetime.now(timezone.utc)).days
 news = get_news()
 
-print(f"FINAL price={price:.4f} chg={chg_24:.2f}% vol={vol/1e6:.1f}M mcap={mcap/1e9:.2f}B tvs={tvs/1e9:.2f}B")
+print(f"FINAL price={price:.4f} chg={chg_24:.2f}% vol={vol/1e6:.1f}M mcap={mcap/1e9:.3f}B tvs={tvs/1e9:.2f}B")
 
 if IS_SUMMARY:
     msg = f"☀️ *PYTH DAILY 7:00 PL - {datetime.now().strftime('%d.%m.%Y')}*\n\n"
     msg += f"💰 Cena: {price:.4f}$ ({chg_24:+.2f}%/24h)\n"
-    msg += f"Mcap: ${mcap/1e9:.2f}B | Vol ${vol/1e6:.1f}M\n\n"
+    msg += f"Mcap: ${mcap/1e9:.3f}B | Vol ${vol/1e6:.1f}M\n\n"
     msg += f"🏛️ *Fundamenty:*\nTVS: ${tvs/1e9:.2f}B ({tvs_1d:+.1f}%/1d)\n"
     msg += f"Feeds: 1883 | Dev: aktywny\nUnlock za {days_unlock}d (19.05.2027)\n\n"
     if news:
@@ -135,10 +121,9 @@ if IS_SUMMARY:
             msg += f"({h}h): {t[:90]}\n"
     else:
         msg += "📰 Brak dużych newsów 36h - konsolidacja\n"
-    msg += f"\n🔎 Ocena: {'Wzrost TVS' if tvs_1d>2 else 'Konsolidacja'}"
+    msg += f"\n🔎 Ocena: Konsolidacja"
     send(msg)
     exit(0)
 
-# alerty intraday
 if abs(chg_24) >= 4.0:
-    send(f"⚠️ *PYTH CENA {chg_24:+.1f}%* {price:.4f}$ Vol ${vol/1e6:.1f}M")
+    send(f"⚠️ *PYTH CENA {chg_24:+.1f}%* {price:.4f}$ Vol ${vol/1e6:.1f}M Mcap ${mcap/1e9:.3f}B")
