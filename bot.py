@@ -1,7 +1,5 @@
-import requests, os
+import requests, os, sys
 from datetime import datetime
-
-PYTH_MINT = "HZ1JovNiVvGrGNiiYvEozEVgZ58xaU3RKwX8eACQBCt3"
 
 def get_rsi(prices, period=14):
     if len(set(prices)) <= 1: return 55.0
@@ -61,7 +59,7 @@ def send_telegram(text):
     token = os.getenv("TELEGRAM_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
     if token and chat_id:
-        requests.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": text})
+        requests.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"})
 
 price, change_24h, mcap, vol = get_live_coingecko()
 funding, oi = get_live_funding()
@@ -83,22 +81,30 @@ score = max(0, min(100, score))
 if score >= 80: sygnal = "🔥 STRONG BUY"
 elif score >= 60: sygnal = "✅ BUY"
 elif score <= 30: sygnal = "⚠️ SELL"
-else: sygnal = "➡️ NEUTRAL - Konsolidacja"
+else: sygnal = "➡️ NEUTRAL"
 
-now = datetime.now().strftime("%d.%m.%Y")
-msg = f"☀️ PYTH DAILY 7:00 PL - {now}\n\n"
+now = datetime.now().strftime("%d.%m.%Y %H:%M")
+is_morning = datetime.utcnow().hour == 5
+
+should_send = False
+if is_morning:
+    should_send = True
+elif score >= 80 or score <= 25:
+    should_send = True
+else:
+    print(f"[{now}] {price:.4f}$ | {score}/100 - skip")
+    sys.exit(0)
+
+if is_morning:
+    msg = f"☀️ *PYTH DAILY 7:00 PL - {now}*\n\n"
+else:
+    msg = f"🚨 *PYTH ALERT {score}/100 - {now}*\n\n"
+
 msg += f"💰 Cena: {price:.4f}$ ({change_24h:+.2f}%/24h)\n"
 msg += f"Mcap: ${mcap:.3f}B | Vol ${vol:.1f}M\n"
 msg += f"RSI: {rsi:.1f} | Power: {score}/100 {sygnal}\n\n"
-msg += f"🏛️ Fundamenty LIVE:\n"
-msg += f"TVS: ${tvs:.2f}B | Feeds: 1883\n"
-msg += f"Top20: 85% supply | Dev: aktywny\n"
-msg += f"Unlock za 230d (19.05.2027)\n\n"
-msg += f"📊 Futures LIVE:\n"
-msg += f"OI: ${oi:.1f}M | Funding: {funding:+.4f}%\n"
-msg += f"Long/Short: Neutral\n\n"
-msg += f"📰 News 36h:\n"
-msg += f"(12h): Pyth Network Price Shifts 3.29% - CMC\n\n"
+msg += f"🏛️ Fundamenty LIVE:\nTVS: ${tvs:.2f}B | Feeds: 1883\n"
+msg += f"📊 Futures LIVE: OI: ${oi:.1f}M | Funding: {funding:+.4f}%\n\n"
 msg += f"🔎 Ocena: {sygnal}"
 
 print(msg)
