@@ -1,4 +1,5 @@
 import requests
+import os
 
 def get_rsi(prices, period=14):
     if len(set(prices)) <= 1: return 55.0
@@ -44,8 +45,18 @@ def get_power_score(price, funding, rsi):
     if price < 0.075: score -= 10
     return max(0, min(100, score))
 
+def send_telegram(text):
+    token = os.getenv("TELEGRAM_TOKEN")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    if not token or not chat_id:
+        print("Brak tokena")
+        return
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    requests.post(url, json={"chat_id": chat_id, "text": text})
+
 price, mcap, oi, funding, rsi = get_data()
 score = get_power_score(price, funding, rsi)
+
 msg = f"PYTH: ${price:.4f}\n"
 msg += f"Mcap: ${mcap/1e6:.1f}M\n"
 msg += f"RSI(14): {rsi:.1f}\n"
@@ -58,4 +69,6 @@ else: sygnal = "➡️ NEUTRAL"
 msg += f"\nPower Score: {score}/100 - {sygnal}\n"
 if funding > 0.05: msg += f"\n🔥 Funding wysoki {funding:.4f}% - Longi przegrzane"
 elif funding < -0.05: msg += f"\n❄️ Funding ujemny {funding:.4f}% - Shorty w pułapce"
+
 print(msg)
+send_telegram(msg)
