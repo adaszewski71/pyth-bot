@@ -1,14 +1,8 @@
-name: pyth-bot
+name: PYTH Bot
 on:
   schedule:
-    - cron: '*/5 * * * *'
-    - cron: '0 5 * * *'
-  workflow_dispatch:
-    inputs:
-      summary:
-        description: 'Test daily summary 7:00 PL'
-        type: boolean
-        default: false
+    - cron: '*/15 * * * *' # co 15 min sprawdza
+  workflow_dispatch: # ręczne uruchomienie
 
 jobs:
   run:
@@ -18,12 +12,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: pip install requests feedparser
-      - name: Run bot
+      - run: pip install requests
+      - run: python bot.py
         env:
-          PHONE: ${{ secrets.PHONE }}
-          APIKEY: ${{ secrets.APIKEY }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          SUMMARY: ${{ (github.event.schedule == '0 5 * * *' || inputs.summary) && '1' || '0' }}
-        run: python bot.py
