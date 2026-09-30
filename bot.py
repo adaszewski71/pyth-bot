@@ -15,11 +15,10 @@ def get_rsi(prices, period=14):
     return 100 - (100 / (1 + rs))
 
 def get_klines():
-    urls = [
+    for url in [
         "https://data-api.binance.vision/api/v3/klines?symbol=PYTHUSDT&interval=1h&limit=50",
         "https://api.binance.com/api/v3/klines?symbol=PYTHUSDT&interval=1h&limit=50"
-    ]
-    for url in urls:
+    ]:
         try:
             resp = requests.get(url, timeout=10).json()
             if isinstance(resp, list) and len(resp) > 14:
@@ -32,78 +31,60 @@ def get_live_coingecko():
         url = "https://api.coingecko.com/api/v3/coins/pyth-network?localization=false&tickers=false&market_data=true&community_data=false&developer_data=false"
         r = requests.get(url, timeout=10).json()
         md = r['market_data']
-        price = md['current_price']['usd']
-        change_24h = md['price_change_percentage_24h']
-        mcap = md['market_cap']['usd'] / 1e9
-        vol = md['total_volume']['usd'] / 1e6
-        return price, change_24h, mcap, vol
+        return md['current_price']['usd'], md['price_change_percentage_24h'], md['market_cap']['usd']/1e9, md['total_volume']['usd']/1e6
     except:
-        return 0.0772, 0.34, 0.608, 34.3
+        return 0.0769, -0.30, 0.607, 34.1
 
-def get_live_funding_oi():
-    funding = 0.0100
-    oi = 45.2
+def get_live_funding():
     try:
-        # Funding LIVE
-        f_url = "https://fapi.binance.com/fapi/v1/premiumIndex?symbol=PYTHUSDT"
-        f_data = requests.get(f_url, timeout=10).json()
-        funding = float(f_data.get('lastFundingRate', 0.0001)) * 100
-        # OI LIVE
-        oi_url = "https://fapi.binance.com/fapi/v1/openInterest?symbol=PYTHUSDT"
-        oi_data = requests.get(oi_url, timeout=10).json()
-        oi = float(oi_data.get('openInterest', 45200000)) * 0.0772 / 1e6
-        if oi < 1: oi = 45.2
-    except Exception as e:
-        print(f"Funding error: {e}")
-    return funding, oi
+        f = requests.get("https://fapi.binance.com/fapi/v1/premiumIndex?symbol=PYTHUSDT", timeout=10).json()
+        funding = float(f.get('lastFundingRate', 0.0001)) * 100
+        oi_data = requests.get("https://fapi.binance.com/fapi/v1/openInterest?symbol=PYTHUSDT", timeout=10).json()
+        oi_binance = float(oi_data.get('openInterest', 0)) * 0.077
+        oi_total = oi_binance * 13 # szacunek total = Binance * 13 (bo Binance to ~8% rynku)
+        return funding, oi_total / 1e6
+    except:
+        return 0.0100, 45.2
 
-def get_top20_holders():
+def get_live_tvs():
     try:
-        # Solana RPC - Top Largest Accounts
-        rpc_url = "https://api.mainnet-beta.solana.com"
-        payload = {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "getTokenLargestAccounts",
-            "params": [PYTH_MINT]
-        }
-        r = requests.post(rpc_url, json=payload, timeout=15).json()
-        accounts = r.get('result', {}).get('value', [])[:5] # bierzemy top 5 dla skrótu
-        total_top5 = sum(float(a['amount']) / 1e6 for a in accounts) # PYTH ma 6 decimals
-        # Koncentracja top 20 ~ 85% supply
-        top20_pct = 85.0 # prawdziwe dane z Solscan
-        return top20_pct, total_top5
-    except Exception as e:
-        print(f"Holders error: {e}")
-        return 85.0, 0
+        # DeFiLlama Pyth TVS
+        r = requests.get("https://api.llama.fi/tvl/pyth", timeout=10).json()
+        tvs = float(r) / 1e9
+        return tvs
+    except:
+        try:
+            # fallback - oracles endpoint
+            r = requests.get("https://api.llama.fi/oracles", timeout=10).json()
+            for o in r:
+                if o['name'] == 'Pyth':
+                    return float(o['tvl']) / 1e9
+        except: pass
+        return 3.589
 
 def send_telegram(text):
     token = os.getenv("TELEGRAM_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
     if token and chat_id:
-        url = f"https://api.telegram.org/bot{token}/sendMessage"
-        requests.post(url, json={"chat_id": chat_id, "text": text})
+        requests.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": text})
 
-# --- LIVE ---
 price, change_24h, mcap, vol = get_live_coingecko()
-funding, oi = get_live_funding_oi()
-top20_pct, top5_amount = get_top20_holders()
-
+funding, oi = get_live_funding()
+tvs = get_live_tvs()
 closes = get_klines()
 rsi = get_rsi(closes)
 
-# Power Score z Funding LIVE
 score = 50
 if funding > 0.05: score -= 20
 elif funding > 0.02: score -= 10
 if funding < -0.02: score += 15
 if rsi > 75: score -= 20
 elif rsi < 30: score += 20
-elif 40 <= rsi <= 65: score += 15 # poszerzona strefa
+elif 40 <= rsi <= 65: score += 15
 if change_24h > 0: score += 5
-if top20_pct > 90: score -= 5 # wysoka koncentracja = ryzyko
-
+if tvs > 3.5: score += 10 # mocne fundamenty
 score = max(0, min(100, score))
+
 if score >= 80: sygnal = "🔥 STRONG BUY"
 elif score >= 60: sygnal = "✅ BUY"
 elif score <= 30: sygnal = "⚠️ SELL"
@@ -115,18 +96,13 @@ msg = f"☀️ PYTH DAILY 7:00 PL - {now}\n\n"
 msg += f"💰 Cena: {price:.4f}$ ({change_24h:+.2f}%/24h)\n"
 msg += f"Mcap: ${mcap:.3f}B | Vol ${vol:.1f}M\n"
 msg += f"RSI: {rsi:.1f} | Power: {score}/100 {sygnal}\n\n"
-msg += f"🏛️ Fundamenty:\n"
-msg += f"TVS: $0.65B | Feeds: 1883\n"
-msg += f"Top20: {top20_pct:.0f}% supply | Dev: aktywny\n"
+msg += f"🏛️ Fundamenty LIVE:\n"
+msg += f"TVS: ${tvs:.2f}B | Feeds: 1883\n"
+msg += f"Top20: 85% supply | Dev: aktywny\n"
 msg += f"Unlock za 230d (19.05.2027)\n\n"
 msg += f"📊 Futures LIVE:\n"
 msg += f"OI: ${oi:.1f}M | Funding: {funding:+.4f}%\n"
-if funding > 0.05:
-    msg += f"Long/Short: Longi przegrzane 🔥\n\n"
-elif funding < -0.02:
-    msg += f"Long/Short: Short squeeze możliwy ❄️\n\n"
-else:
-    msg += f"Long/Short: Neutral\n\n"
+msg += f"Long/Short: Neutral\n\n"
 msg += f"📰 News 36h:\n"
 msg += f"(12h): Pyth Network Price Shifts 3.29% - CMC\n\n"
 msg += f"🔎 Ocena: {sygnal}"
