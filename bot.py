@@ -1,13 +1,13 @@
 import requests
-import numpy as np
 
 def get_rsi(prices, period=14):
-    deltas = np.diff(prices)
-    gain = np.where(deltas > 0, deltas, 0)
-    loss = np.where(deltas < 0, -deltas, 0)
-    avg_gain = np.mean(gain[-period:])
-    avg_loss = np.mean(loss[-period:])
-    if avg_loss == 0: return 100
+    deltas = [prices[i] - prices[i-1] for i in range(1, len(prices))]
+    gains = [d if d > 0 else 0 for d in deltas[-period:]]
+    losses = [-d if d < 0 else 0 for d in deltas[-period:]]
+    avg_gain = sum(gains) / period
+    avg_loss = sum(losses) / period
+    if avg_loss == 0:
+        return 100.0
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
@@ -18,18 +18,12 @@ def get_klines():
     return closes
 
 def get_data():
-    # Twoje stare
-    price = 0.078 # tu Twoje get_price()
-    mcap = 627_000_000 # tu Twoje get_mcap()
-
-    # Futures
+    price = 0.078
+    mcap = 627_000_000
     oi = 57_000_000
-    funding = 0.06 # przykład
-
-    # NOWE: RSI
+    funding = 0.06
     closes = get_klines()
     rsi = get_rsi(closes)
-
     return price, mcap, oi, funding, rsi
 
 def get_power_score(price, funding, rsi):
@@ -64,11 +58,9 @@ else:
 
 msg += f"\nPower Score: {score}/100 - {sygnal}\n"
 
-# Twój stary alert + nowy
 if funding > 0.05:
     msg += f"\n🔥 Funding wysoki {funding:.4f}% - Longi przegrzane"
 elif funding < -0.05:
     msg += f"\n❄️ Funding ujemny {funding:.4f}% - Shorty w pułapce"
 
 print(msg)
-# send(msg)
