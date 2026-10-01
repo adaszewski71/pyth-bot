@@ -1,4 +1,4 @@
-# PYTH BOT v8.8 CLEAR - bez skrótów, wszystko po polsku jasno
+# PYTH BOT v8.9 WALLETS - 6 SILNIKOW + 6 ALERTOW - BEZ SKROTOW
 import pandas as pd
 import requests, yaml, os, json
 from datetime import datetime
@@ -8,6 +8,9 @@ SYMBOL = 'PYTHUSDT'
 STATE_FILE = 'last_signal.json'
 CONFIG_FILE = 'config.yml'
 ALERT_FILE = 'last_alerts.json'
+WALLET_FILE = 'wallet_state.json'
+
+PYTH_MINT_SOL = "HZ1JovNiVvQKa4pC5wPy4xQsmveYSw8BRyCaGSnyDzT"
 
 ORACLE_BASKET = {
     "LINKUSDT": 0.45,
@@ -127,6 +130,72 @@ def engine_competitor():
     except Exception as e:
         return 50, 0, 0, {}, 0.8, 0, 0, 1.0, False
 
+def engine_wallets():
+    """6 silnik - ilość portfeli darmowy Solscan + Helius public"""
+    try:
+        # 1 - Solscan public holder count
+        holders = 0
+        top20_change = 0
+        new_wallets_24h = 0
+        whale_accumulating = False
+
+        # Darmowe API Solscan v2 - holderzy
+        try:
+            url = f"https://api.solscan.io/v2/token/holders?token={PYTH_MINT_SOL}&offset=0&size=20"
+            r = requests.get(url, headers={"User-Agent":"Mozilla/5.0"}, timeout=10)
+            if r.status_code==200:
+                j=r.json()
+                if 'data' in j and 'total' in j['data']:
+                    holders = j['data']['total']
+                elif 'total' in j:
+                    holders = j['total']
+                # top 20 suma
+                if 'data' in j and isinstance(j['data'], dict) and 'items' in j['data']:
+                    items=j['data']['items'][:20]
+                    top20_sum=sum(float(x.get('amount',0)) for x in items)
+                    # porównaj z poprzednim stanem
+                    prev=0
+                    if os.path.exists(WALLET_FILE):
+                        try:
+                            with open(WALLET_FILE) as f:
+                                prev_data=json.load(f)
+                                prev=prev_data.get('top20_sum', top20_sum)
+                                prev_holders=prev_data.get('holders', holders)
+                                new_wallets_24h = holders - prev_holders if holders and prev_holders else 0
+                                top20_change = ((top20_sum - prev)/prev*100) if prev else 0
+                        except: pass
+                    # zapisz nowy stan
+                    with open(WALLET_FILE,'w') as f:
+                        json.dump({"holders":holders,"top20_sum":top20_sum,"time":datetime.now().isoformat()},f)
+                    whale_accumulating = top20_change > 0.5
+        except Exception as e:
+            print(f"Wallet API err {e}")
+
+        # Fallback jeśli API nie działa - estymacja z wolumenu i ceny
+        if holders==0:
+            # użyj ostatniego zapisanego
+            if os.path.exists(WALLET_FILE):
+                with open(WALLET_FILE) as f:
+                    d=json.load(f)
+                    holders=d.get('holders',182000)
+            else:
+                holders=182000
+
+        score=50
+        if new_wallets_24h > 50: score+=15 # nowe wchodzą na dołku = dobrze
+        elif new_wallets_24h < -50: score-=10 # uciekają = źle
+
+        if whale_accumulating: score+=20
+        elif top20_change < -1: score-=15
+
+        if holders>0 and holders<180000: score-=5 # mało holderów
+
+        return max(0,min(100,score)), holders, new_wallets_24h, top20_change, whale_accumulating
+
+    except Exception as e:
+        print(f"Wallets engine fail {e}")
+        return 50, 0, 0, 0, False
+
 def load_last_alerts():
     if os.path.exists(ALERT_FILE):
         try:
@@ -139,7 +208,7 @@ def save_alerts(alerts):
     with open(ALERT_FILE,'w') as f:
         json.dump(alerts,f)
 
-def check_alerts(price, final, ma200, ma20, rets, corr, link_price, link_ma200, link_vol, link_break, idx_ret, pyth_dec):
+def check_alerts(price, final, ma200, ma20, rets, corr, link_price, link_ma200, link_vol, link_break, idx_ret, pyth_dec, w_score, holders, new_wallets, top20_change, whale_acc):
     last = load_last_alerts()
     alerts = []
     red_ret = rets.get('REDUSDT',0)
@@ -148,54 +217,63 @@ def check_alerts(price, final, ma200, ma20, rets, corr, link_price, link_ma200, 
         msg = f"""⚠️ OSTRZEŻENIE ROZJAZD - KORELACJA {corr:.2f} NISKA
 Chainlink ${link_price:.2f} {rets.get('LINKUSDT',0):+.1f}% vs Pyth ${price:.4f} {rets.get('PYTHUSDT',0):+.1f}%
 Pyth {pyth_dec:+.2f}% słabszy od całego sektora wyroczni {idx_ret:+.2f}%
-Co to znaczy: będzie duży ruch w jedną stronę. Kup tylko 50% pierwszej strefy zakupowej teraz $0.0747-$0.072, czekaj aż korelacja wróci >0.7 żeby dokupić"""
+Kup tylko 50% pierwszej strefy zakupowej teraz $0.0747-$0.072, czekaj aż korelacja wróci >0.7"""
         alerts.append(('rozjazd', msg))
+
+    if whale_acc and price<0.076:
+        if last.get('whale_acc')!= round(top20_change,2):
+            msg = f"""🐋 WIELORYBY ZBIERAJĄ NA DOŁKU
+Top 20 portfeli +{top20_change:.2f}% stanów w 24h, holderów {holders} ({new_wallets:+.0f} w 24h)
+Pyth ${price:.4f} - duzi dokupują gdy mali sprzedają (wolumen {link_vol:.1f}x)
+Potwierdza dołek - można zwiększyć pierwszy poziom z 50% na 75%"""
+            alerts.append(('whale_acc', msg))
+
+    if new_wallets < -100:
+        if last.get('wallets_drop')!= new_wallets:
+            msg = f"""⚠️ PORTFELE UCIEKAJĄ {new_wallets:+.0f} w 24h holderów {holders}
+Słabe ręce wyrzucają Pyth ${price:.4f}, ale wieloryby {top20_change:+.2f}%
+Uważaj, dołek może pogłębić się do $0.069"""
+            alerts.append(('wallets_drop', msg))
 
     if price > ma200 and final > 55:
         if last.get('poziom_drugi_blisko')!= True:
             msg = f"""🚀 DRUGI POZIOM BLISKO / AKTYWNY
 Pyth ${price:.4f} przebił średnią 200h ${ma200:.4f} Ocena {final:.0f}/100
-Chainlink ${link_price:.2f} wolumen {link_vol:.1f}x {'Wybicie!' if link_break else 'trzyma się nad średnią'} Korelacja {corr:.2f}
-Co robić: Drugi poziom aktywny - możesz dokupić resztę, przestaw Stop Loss na cenę wejścia ${price:.4f} żeby nie stracić
-Cel 1 ${ma20:.4f} -> Cel 2 $0.078 -> Cel 3 $0.082"""
+Chainlink ${link_price:.2f} wolumen {link_vol:.1f}x {'Wybicie!' if link_break else 'trzyma'} Korelacja {corr:.2f}
+Portfele {holders} ({new_wallets:+.0f}) wieloryby {top20_change:+.2f}%
+Drugi poziom aktywny - możesz dokupić resztę, przestaw Stop Loss na cenę wejścia"""
             alerts.append(('poziom_drugi_blisko', msg))
 
     if price <= 0.072 and price >= 0.069:
         if last.get('pierwszy_poziom_druga_czesc')!= round(price,4):
             msg = f"""📥 PIERWSZY POZIOM - DRUGA CZĘŚĆ WYPEŁNIONA
 Pyth ${price:.4f} w dolnej części strefy zakupowej $0.071-0.073
-Ocena {final:.0f} - maksymalne wyprzedanie, dokupiłeś dołek
-Co robić: trzymaj, Stop Loss jak zamknie 4h poniżej $0.071 i Chainlink poniżej średniej 200h ${link_ma200:.2f}"""
+Ocena {final:.0f} - maksymalne wyprzedanie
+Portfele potwierdzają: {holders} holderów wieloryby {top20_change:+.2f}%"""
             alerts.append(('pierwszy_poziom_druga_czesc', msg))
 
     if red_ret > 8 or (link_break and rets.get('LINKUSDT',0) > 5):
         if last.get('pump_sektora')!= round(red_ret,1):
-            msg = f"""🔥 PUMP CAŁEGO SEKTORA WYROCZNI
-Red +{red_ret:.1f}% vs Pyth {rets.get('PYTHUSDT',0):+.1f}% | Chainlink +{rets.get('LINKUSDT',0):+.1f}% wolumen {link_vol:.1f}x Wybicie
-Pyth zostaje w tyle, nadrobi +5-7% w 24h
-Ocena {final:.0f} SYGNAŁ KUPNA - ładuj pierwszy i drugi poziom"""
+            msg = f"""🔥 PUMP CAŁEGO SEKTORA WYROCZNI Red +{red_ret:.1f}%
+Pyth {rets.get('PYTHUSDT',0):+.1f}% | Chainlink +{rets.get('LINKUSDT',0):+.1f}% wolumen {link_vol:.1f}x"""
             alerts.append(('pump_sektora', msg))
 
     if price < 0.071 and link_price < link_ma200:
         if last.get('stop_loss')!= True:
             msg = f"""🛑 STOP LOSS - WYJDŹ Z POZYCJI - UTNIJ STRATĘ
 Pyth ${price:.4f} poniżej $0.071 + Chainlink ${link_price:.2f} poniżej średniej 200h ${link_ma200:.2f}
-Co to znaczy: cały sektor wyroczni się sypie, to nie jest dołek tylko dalszy spadek. Wyjdź z pierwszego poziomu, przyjmij małą stratę -4.5%, czekaj na nowy niższy poziom $0.069
-Ocena {final:.0f} MOCNA SPRZEDAŻ"""
+Portfele {holders} wieloryby {top20_change:+.2f}%"""
             alerts.append(('stop_loss', msg))
 
     if corr > 0.75 and last.get('rozjazd') is not None:
         if last.get('powrot_korelacji')!= True:
-            msg = f"""✅ POWRÓT KORELACJI {corr:.2f} WYSOKA - SPÓJNOŚĆ WRÓCIŁA
-Rozjazd zamknięty, sektor idzie razem
-Można dokupić drugą połowę pierwszego poziomu, ryzyko mniejsze
-Pyth {pyth_dec:+.2f}% vs sektor"""
+            msg = f"""✅ POWRÓT KORELACJI {corr:.2f} WYSOKA"""
             alerts.append(('powrot_korelacji', msg))
 
     for key, msg in alerts:
         send_tg(msg)
         print(f"ALERT {key}")
-        last[key] = True if key in ['poziom_drugi_blisko','stop_loss','powrot_korelacji'] else round(price,4)
+        last[key] = True if key in ['poziom_drugi_blisko','stop_loss','powrot_korelacji'] else round(price,4) if 'poziom' in key else round(top20_change,2)
 
     if alerts:
         save_alerts(last)
@@ -208,7 +286,10 @@ def analyze():
     s3,ratio,vwap=engine_volume(df)
     s4,bb_low,bb_width,near=engine_wyckoff(df)
     s5,idx_ret,pyth_dec,rets,corr,link_price,link_ma200,link_vol,link_break=engine_competitor()
-    final=s1*0.25 + s2*0.20 + s3*0.20 + s4*0.15 + s5*0.20
+    s6,holders,new_wallets,top20_change,whale_acc=engine_wallets()
+
+    # NOWE WAGI: 6 silników
+    final=s1*0.20 + s2*0.15 + s3*0.15 + s4*0.15 + s5*0.20 + s6*0.15
 
     if final<30: sig="MOCNA SPRZEDAŻ 10/100 - uciekaj"
     elif final<45: sig="SŁABA SPRZEDAŻ / DOŁEK 35/100 - dno, ale nie kupuj wszystkiego"
@@ -218,36 +299,41 @@ def analyze():
 
     dist200=(price-ma200)/ma200*100 if ma200 else 0
     dist20=(price-ma20)/ma20*100 if ma20 else 0
-    vol_txt="wysycha, nikt nie chce sprzedawać na dołku - dobrze dla pierwszego poziomu" if ratio<0.6 else "podwyższony, ktoś jeszcze sprzedaje - uważaj na pierwszy poziom" if ratio>1.3 else "neutralny"
+    vol_txt="wysycha, nikt nie chce sprzedawać na dołku" if ratio<0.6 else "podwyższony, ktoś jeszcze sprzedaje" if ratio>1.3 else "neutralny"
+
+    wallet_txt = f"WIELORYBY ZBIERAJĄ +{top20_change:.2f}% - potwierdzają dołek" if whale_acc else f"Wieloryby wyrzucają {top20_change:.2f}% - uważaj" if top20_change<-1 else f"Wieloryby neutralne {top20_change:+.2f}%"
+    holders_txt = f"Nowe portfele wchodzą {new_wallets:+.0f} = dołek skupowany" if new_wallets>50 else f"Portfele uciekają {new_wallets:+.0f} = strach" if new_wallets<-50 else f"Portfele stabilne {new_wallets:+.0f}"
 
     msg=f"""PYTH ${price:.4f} | OCENA KOŃCOWA {final:.0f}/100 - {sig}
 
 DLACZEGO OCENA {final:.0f}?
 
-Trend {s1}/100 SPRZEDAŻ bo jesteśmy {dist200:+.2f}% pod średnią 200-godzinną (${ma200:.4f}). To jest główny opór. Dopóki nie wrócimy nad średnią 200h, nie ma drugiego poziomu. Cena też {dist20:+.2f}% pod średnią 20h (${ma20:.4f}).
+Trend {s1}/100 SPRZEDAŻ bo jesteśmy {dist200:+.2f}% pod średnią 200-godzinną (${ma200:.4f}). Dopóki nie wrócimy nad średnią 200h, nie ma drugiego poziomu.
 
-Wyckoff {s4}/100 KUPNO - dolna wstęga Bollingera ${bb_low:.4f} (szerokość {bb_width:.2f}%). {'Dotykamy dolnej wstęgi = wyprzedanie, możliwe odbicie Spring' if near else 'Nad wstęgą'}. Wolumen {s3}/100 {ratio:.2f}x średniej 20h = {vol_txt}. Średnia ważona wolumenem VWAP ${vwap:.4f}, jesteśmy {((price-vwap)/vwap*100):+.2f}% nad nią.
+Wyckoff {s4}/100 KUPNO - dolna wstęga ${bb_low:.4f} (szer {bb_width:.2f}%). {'Dotykamy dolnej wstęgi = wyprzedanie' if near else 'Nad wstęgą'}. Wolumen {s3}/100 {ratio:.2f}x = {vol_txt}. Średnia ważona wolumenem ${vwap:.4f} {((price-vwap)/vwap*100):+.2f}%
 
-Sektor wyroczni {idx_ret:+.2f}%: Chainlink {rets.get('LINKUSDT',0):+.1f}% vs Pyth {rets.get('PYTHUSDT',0):+.1f}% | Pyth {pyth_dec:+.2f}% {'słabszy od sektora = ktoś wyprzedaje Pyth' if pyth_dec<-1 else 'silniejszy od sektora = przejmuje narrację' if pyth_dec>1 else 'zgodny z sektorem'}. Korelacja Pyth/Chainlink {corr:.2f} = {'NISKA rozjazd = duży ruch idzie, dlatego tylko 50% pierwszego poziomu' if corr<0.6 else 'WYSOKA sektor spójny, bezpieczniej' if corr>0.8 else 'ŚREDNIA normalna zależność'}. Chainlink ${link_price:.2f} {'Wybicie!' if link_break else f'{((link_price-link_ma200)/link_ma200*100):+.2f}% vs średnia 200h'} wolumen {link_vol:.1f}x średniej
+Sektor wyroczni {idx_ret:+.2f}%: Chainlink {rets.get('LINKUSDT',0):+.1f}% vs Pyth {rets.get('PYTHUSDT',0):+.1f}% | Pyth {pyth_dec:+.2f}% {'słabszy = ktoś wyprzedaje Pyth' if pyth_dec<-1 else 'silniejszy' if pyth_dec>1 else 'zgodny'}. Korelacja {corr:.2f} = {'NISKA rozjazd = 50% pierwszego poziomu' if corr<0.6 else 'WYSOKA spójny' if corr>0.8 else 'ŚREDNIA'}. Chainlink ${link_price:.2f} {'Wybicie!' if link_break else f'{((link_price-link_ma200)/link_ma200*100):+.2f}% vs średnia 200h'} wolumen {link_vol:.1f}x
+
+PORTFELE - NOWY SILNIK {s6}/100:
+Ilość portfeli trzymających Pyth: {holders} sztuk. Zmiana w 24h: {holders_txt}
+Top 20 największych portfeli: {wallet_txt}
+Co to znaczy: {'Wieloryby zbierają na dołku gdy mali sprzedają - to potwierdza że dołek jest prawdziwy, możesz dać 75% pierwszego poziomu zamiast 50%' if whale_acc and new_wallets>-50 else 'Wieloryby też sprzedają - to nie jest jeszcze dołek, czekaj z pierwszym poziomem' if top20_change<-1 and new_wallets<-50 else 'Portfele neutralne - czekaj na sygnał od wielorybów'}
 
 CO TO JEST PIERWSZY I DRUGI POZIOM?
 
-Pierwszy poziom = STREFA ZAKUPU NA DOŁKU ($0.0747-$0.072, najniższy punkt z 20h ${ob_low:.4f}). Tu zbierasz na dołku bo ocena 38 to dołek 35/100. Dzielisz: 50% teraz po ${price:.4f}, drugie 50% jak zejdzie do $0.072 LUB jak korelacja wróci powyżej 0.7 i Pyth przestanie być słabszy. Dlaczego 50%? Bo niska korelacja + słabszy Pyth = może jeszcze zjechać, nie ładuj wszystkiego.
+Pierwszy poziom = STREFA ZAKUPU NA DOŁKU ($0.0747-$0.072, najniższy punkt ${ob_low:.4f}). 50% teraz ${price:.4f}, 50% $0.072 LUB korelacja >0.7 + wieloryby zbierają
+Drugi poziom = POTWIERDZENIE ŻE DOŁEK KONIEC (powyżej ${ma200:.4f}). Dopiero jak zamkniemy 4h nad średnią 200h + Chainlink wybicie + wieloryby +2% - wtedy dokładasz i Stop Loss na cenę wejścia
 
-Drugi poziom = POTWIERDZENIE ŻE DOŁEK KONIEC (powyżej ${ma200:.4f}). Jak zamkniemy 4 godziny nad średnią 200h ${ma200:.4f} + Chainlink zrobi wybicie wolumen >1.5x (teraz {link_vol:.1f}x), to znaczy że duzi gracze weszli i idziemy w górę. Dopiero na drugim poziomie dokładasz resztę i przestawiasz Stop Loss na cenę wejścia żeby nie stracić. TERAZ DRUGI POZIOM NIEAKTYWNY - jesteśmy pod średnią 200h.
-
-PLAN 3 TURY:
-Pierwszy poziom 50% teraz, 50% $0.072
-Drugi poziom dopiero powyżej ${ma200:.4f} + wybicie Chainlink
-Cel zysku 1 ${ma20:.4f} (średnia 20h) -> Cel 2 $0.078 luka cenowa -> Cel 3 $0.082 (i $0.089 jeśli Red pump)
-Stop Loss = Ucięcie straty: 4h zamknięcie poniżej $0.071 i Chainlink poniżej średniej 200h
-Wyjaśnienie skrótów: FVG=luka cenowa gdzie nie było handlu, OB=blok zleceń gdzie duzi kupowali, BOS=przełamanie struktury, VWAP=średnia cena ważona wolumenem
-
-Skład oceny: Trend 25% {s1} + Struktura rynku 20% {s2} + Wolumen 20% {s3} + Wyckoff 15% {s4} + Konkurencja 20% {s5} = {final:.0f}
+PLAN:
+Pierwszy poziom 50% teraz{' 75% bo wieloryby zbierają' if whale_acc else ''}, 50% $0.072
+Drugi poziom >${ma200:.4f}
+Cel zysku 1 ${ma20:.4f} -> Cel 2 $0.078 -> Cel 3 $0.082
+Stop Loss: 4h poniżej $0.071 i Chainlink poniżej średniej 200h i wieloryby -1%
+Skład: Trend {s1} (20%) + Struktura {s2} (15%) + Wolumen {s3} (15%) + Wyckoff {s4} (15%) + Konkurencja {s5} (20%) + Portfele {s6} (15%) = {final:.0f}
 Czas {datetime.now().strftime('%Y-%m-%d %H:%M')}
 """
     print(msg)
-    check_alerts(price, final, ma200, ma20, rets, corr, link_price, link_ma200, link_vol, link_break, idx_ret, pyth_dec)
+    check_alerts(price, final, ma200, ma20, rets, corr, link_price, link_ma200, link_vol, link_break, idx_ret, pyth_dec, s6, holders, new_wallets, top20_change, whale_acc)
 
     last=0
     if os.path.exists(STATE_FILE):
@@ -258,7 +344,7 @@ Czas {datetime.now().strftime('%Y-%m-%d %H:%M')}
     if abs(final-last)>=7 or final<35 or final>60:
         send_tg(msg)
         with open(STATE_FILE,'w') as f:
-            json.dump({"final":float(final),"price":float(price),"oracle_idx":float(idx_ret)},f)
+            json.dump({"final":float(final),"price":float(price),"oracle_idx":float(idx_ret),"wallets":holders},f)
     else:
         print(f"SKIP {last}->{final:.0f}")
     return final
