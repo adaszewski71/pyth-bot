@@ -201,4 +201,3 @@ msg+=f"Analiza:\n" + "\n".join([f"- {x}" for x in reasons]) + f"\n\n{sygnal}"
 
 print(msg)
 send_telegram(msg)
-Po wgraniu kliknij `Run workflow` i daj znać jaki log.
