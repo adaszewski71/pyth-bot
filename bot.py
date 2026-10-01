@@ -49,35 +49,50 @@ def get_coingecko():
     except: return 0.0769,-0.3,0.607,34.1
 def get_futures_live(price):
     funding=0.01; oi=0; ls_acc=0; ls_pos=0
-    ok_funding=False; ok_oi=False; ok_ls=False
-    domains=["https://fapi.binance.com","https://data-api.binance.vision","https://api.binance.com"]
-    for d in domains:
+    ok_f= False; ok_oi=False; ok_ls=False; src_oi="Binance"; src_ls="Binance"
+    # 1. Binance direct
+    for d in ["https://fapi.binance.com","https://data-api.binance.vision"]:
         try:
-            if not ok_funding:
+            if not ok_f:
                 r=requests.get(f"{d}/fapi/v1/premiumIndex?symbol=PYTHUSDT",timeout=5).json()
                 if 'lastFundingRate' in r:
-                    funding=float(r['lastFundingRate'])*100; ok_funding=True
-        except: pass
-        try:
+                    funding=float(r['lastFundingRate'])*100; ok_f=True
             if not ok_oi:
                 r=requests.get(f"{d}/fapi/v1/openInterest?symbol=PYTHUSDT",timeout=5).json()
                 if 'openInterest' in r:
-                    oi=float(r['openInterest'])*price/1e6; ok_oi=True
-        except: pass
-        if ok_funding and ok_oi: break
-    for d in ["https://fapi.binance.com","https://data-api.binance.vision"]:
-        try:
+                    oi=float(r['openInterest'])*price/1e6; ok_oi=True; src_oi="Binance LIVE"
             if not ok_ls:
                 r=requests.get(f"{d}/futures/data/globalLongShortAccountRatio?symbol=PYTHUSDT&period=5m&limit=1",timeout=5).json()
                 if isinstance(r,list) and len(r)>0 and 'longShortRatio' in r[0]:
-                    ls_acc=float(r[0]['longShortRatio']); ok_ls=True; break
+                    ls_acc=float(r[0]['longShortRatio']); ok_ls=True; src_ls="Binance LIVE"
+            if ok_f and ok_oi and ok_ls: break
         except: pass
-    try:
-        r=requests.get("https://fapi.binance.com/futures/data/topLongShortPositionRatio?symbol=PYTHUSDT&period=5m&limit=1",timeout=5).json()
-        if isinstance(r,list) and len(r)>0:
-            ls_pos=float(r[0].get('longShortRatio',0))
-    except: pass
-    return funding, oi, ls_acc, ls_pos, ok_funding, ok_oi, ok_ls
+    # 2. Fallback CoinGlass public (bez klucza)
+    if not ok_oi:
+        try:
+            # CoinGlass ma publiczny endpoint z OI
+            r=requests.get("https://api.coinglass.com/api/pro/v1/futures/open-interest?exchange=Binance&symbol=PYTHUSDT",timeout=10, headers={"User-Agent":"Mozilla/5.0"}).json()
+            # struktura: data[0].openInterest
+            if 'data' in r and len(r['data'])>0:
+                oi=float(r['data'][0].get('openInterest',0))/1e6
+                if oi>1: ok_oi=True; src_oi="CoinGlass"
+        except: pass
+    if not ok_oi:
+        try:
+            # Fallback 2: Bybit OI jako proxy
+            r=requests.get("https://api.bybit.com/v5/market/open-interest?category=linear&symbol=PYTHUSDT&intervalTime=5min",timeout=10).json()
+            if 'result' in r and 'list' in r['result'] and len(r['result']['list'])>0:
+                oi=float(r['result']['list'][0]['openInterest'])*price/1e6
+                if oi>1: ok_oi=True; src_oi="Bybit proxy"
+        except: pass
+    if not ok_ls:
+        try:
+            r=requests.get("https://api.coinglass.com/api/pro/v1/futures/longShortRatio?exchange=Binance&symbol=PYTHUSDT",timeout=10, headers={"User-Agent":"Mozilla/5.0"}).json()
+            if 'data' in r and len(r['data'])>0:
+                ls_acc=float(r['data'][0].get('longShortRatio',0))
+                if ls_acc>0: ok_ls=True; src_ls="CoinGlass"
+        except: pass
+    return funding, oi, ls_acc, ls_pos, ok_f, ok_oi, ok_ls, src_oi, src_ls
 def get_tvs():
     try:
         r=requests.get("https://api.llama.fi/protocol/pyth-network",timeout=10).json()
@@ -97,12 +112,12 @@ def send_telegram(text):
 kl=get_klines(); closes=[float(x[4]) for x in kl]; vols=[float(x[5]) for x in kl]
 price_cg, change_24h, mcap, vol_cg = get_coingecko()
 price = closes[-1] if closes else price_cg
-funding, oi_live, ls_acc, ls_pos, ok_funding, ok_oi, ok_ls = get_futures_live(price)
+funding, oi_live, ls_acc, ls_pos, ok_f, ok_oi, ok_ls, src_oi, src_ls = get_futures_live(price)
 tvs = get_tvs()
 
 r=rsi(closes); ma20=sma(closes,20); ma50=sma(closes,50); ma200=sma(closes,200)
 ml,sig,hist=macd_calc(closes); bb_low,bb_mid,bb_high=bollinger(closes)
-atr_v=atr_calc(kl); vol_avg=sma(vols,20); vol_now=vols[-1]; atr_pct=atr_v/price*100 if price else 0
+atr_v=atr_calc(kl); vol_avg=sma(vols,20); vol_now=vols[-1]
 
 score=50; reasons=[]; level1=[]; level2=[]
 
@@ -137,11 +152,11 @@ elif funding>0.02: score-=10; reasons.append(f"Funding {funding:.4f}% wysoki"); 
 elif funding<-0.02: score+=15; reasons.append(f"Funding {funding:.4f}% SHORT SQUEEZE"); level1.append(f"Funding {funding:.3f}% squeeze")
 else: reasons.append(f"Funding {funding:.4f}% neutralny")
 
-if ok_oi and oi_live>80: reasons.append(f"OI ${oi_live:.1f}M bardzo wysokie"); level2.append(f"OI ${oi_live:.0f}M HIGH")
+if ok_oi and oi_live>80: reasons.append(f"OI ${oi_live:.1f}M bardzo wysokie [{src_oi}]"); level2.append(f"OI ${oi_live:.0f}M HIGH")
 if ok_ls:
-    if ls_acc>2.0: score-=15; reasons.append(f"L/S {ls_acc:.2f} tlum LONG"); level2.append(f"L/S {ls_acc:.2f} crowd LONG")
-    elif ls_acc<0.8: score+=10; reasons.append(f"L/S {ls_acc:.2f} tlum SHORT"); level1.append(f"L/S {ls_acc:.2f} crowd SHORT")
-    else: reasons.append(f"L/S {ls_acc:.2f} balanced")
+    if ls_acc>2.0: score-=15; reasons.append(f"L/S {ls_acc:.2f} tlum LONG [{src_ls}]"); level2.append(f"L/S {ls_acc:.2f} crowd LONG")
+    elif ls_acc<0.8: score+=10; reasons.append(f"L/S {ls_acc:.2f} tlum SHORT [{src_ls}]"); level1.append(f"L/S {ls_acc:.2f} crowd SHORT")
+    else: reasons.append(f"L/S {ls_acc:.2f} balanced [{src_ls}]")
 
 score=max(0,min(100,score))
 
@@ -156,26 +171,22 @@ is_daily = hour_utc in [5, 10, 17]
 is_hard = score >= 80 or score <= 20
 
 if is_daily:
-    if hour_utc == 5: daily_name = "PORANNY 7:00"
-    elif hour_utc == 10: daily_name = "POLUDNIOWY 12:00"
-    else: daily_name = "WIECZORNY 19:00"
-    should = True
+    daily_name = {5:"PORANNY 7:00",10:"POLUDNIOWY 12:00",17:"WIECZORNY 19:00"}[hour_utc]
 elif is_hard:
     daily_name = f"ALERT HARD {lvl}"
-    should = True
 else:
     print(f"[{now.strftime('%d.%m.%Y %H:%M')}] {price:.4f}$ | {score}/100 {lvl} SKIP")
     sys.exit(0)
 
-oi_str = f"${oi_live:.1f}M [LIVE]" if ok_oi and oi_live>0 else "N/A (blocked)"
-ls_str = f"{ls_acc:.2f} [LIVE]" if ok_ls and ls_acc>0 else "N/A (blocked)"
+oi_str = f"${oi_live:.1f}M [{src_oi}]" if ok_oi and oi_live>0 else "N/A"
+ls_str = f"{ls_acc:.2f} [{src_ls}]" if ok_ls and ls_acc>0 else "N/A"
 top_str = f"{ls_pos:.2f}" if ls_pos>0 else "N/A"
 
 msg=f"PYTH {daily_name} {score}/100 - {now.strftime('%d.%m.%Y %H:%M')}\n\n"
 msg+=f"Cena: {price:.4f}$ ({change_24h:+.2f}%) RSI {r:.1f}\n"
 msg+=f"MA20 {ma20:.4f} | MA200 {ma200:.4f} | BB {bb_low:.4f}-{bb_high:.4f}\n"
 msg+=f"FUTURES: Funding {funding:+.4f}% | OI {oi_str}\n"
-msg+=f"L/S Acc {ls_str} | Top Pos {top_str} | TVS ${tvs:.2f}B\n\n"
+msg+=f"L/S {ls_str} | TVS ${tvs:.2f}B\n\n"
 msg+=f"POZIOM: {lvl}\nCo to znaczy: {action}\n\n"
 if level1: msg+=f"SOFT: {', '.join(level1)}\n"
 if level2: msg+=f"HARD: {', '.join(level2)}\n"
