@@ -1,142 +1,161 @@
-import requests, os, sys, math
-from datetime import datetime
+# PYTH BOT v8.0 FINAL - 4 ENGINES OBJECTIVE
+# TREND + SMC + VOLUME + WYCKOFF
+# Score FINAL 0-100, bez Elliotta
 
-def ema(prices, period):
-    k = 2/(period+1); e = prices[0]
-    for p in prices[1:]: e = p*k + e*(1-k)
-    return e
-def sma(prices, period):
-    return sum(prices[-period:])/period if len(prices)>=period else prices[-1]
-def rsi(prices, period=14):
-    if len(prices)<period+1: return 55.0
-    if len(set(prices[-period-1:]))<=1: return 55.0
-    deltas=[prices[i]-prices[i-1] for i in range(1,len(prices))]
-    gains=[d if d>0 else 0 for d in deltas[-period:]]
-    losses=[-d if d<0 else 0 for d in deltas[-period:]]
-    avg_g=sum(gains)/period or 0.00001; avg_l=sum(losses)/period or 0.00001
-    return 100-(100/(1+avg_g/avg_l))
-def macd_calc(prices):
-    if len(prices)<26: return 0,0,0
-    e12=ema(prices[-26:],12); e26=ema(prices[-26:],26); ml=e12-e26
-    sig_list=[]
-    for i in range(9):
-        sp=prices[-(26+9-i):-(9-i) or None]
-        if len(sp)>=12: sig_list.append(ema(sp[-26:],12)-ema(sp[-26:],26))
-    sig=ema(sig_list,9) if sig_list else 0
-    return ml,sig,ml-sig
-def bollinger(prices, period=20):
-    if len(prices)<period: return prices[-1],prices[-1],prices[-1]
-    m=sma(prices,period); std=math.sqrt(sum((x-m)**2 for x in prices[-period:])/period)
-    return m-2*std,m,m+2*std
-def atr_calc(klines, period=14):
-    trs=[]
-    for i in range(1,len(klines)):
-        h=float(klines[i][2]); l=float(klines[i][3]); pc=float(klines[i-1][4])
-        trs.append(max(h-l,abs(h-pc),abs(l-pc)))
-    return sum(trs[-period:])/period if trs else 0
-def get_klines(limit=200):
-    for url in [f"https://data-api.binance.vision/api/v3/klines?symbol=PYTHUSDT&interval=1h&limit={limit}", f"https://api.binance.com/api/v3/klines?symbol=PYTHUSDT&interval=1h&limit={limit}"]:
+import ccxt
+import pandas as pd
+import numpy as np
+import time
+import yaml
+
+# --- CONFIG ---
+SYMBOL = 'PYTH/USDT'
+TIMEFRAME = '1h'
+CONFIG_FILE = 'config.yml'
+
+def load_config():
+    with open(CONFIG_FILE) as f:
+        return yaml.safe_load(f)
+
+# --- INDICATORS ---
+def sma(series, period):
+    return series.rolling(period).mean()
+
+def rsi(series, period=14):
+    delta = series.diff()
+    gain = delta.where(delta > 0, 0).rolling(period).mean()
+    loss = -delta.where(delta < 0, 0).rolling(period).mean()
+    rs = gain / loss
+    return 100 - (100 / (1 + rs))
+
+def bollinger(series, period=20, std=2):
+    ma = sma(series, period)
+    sd = series.rolling(period).std()
+    return ma - std*sd, ma + std*sd, ma
+
+# --- ENGINES ---
+def engine_trend(df):
+    price = df['close'].iloc[-1]
+    ma20 = sma(df['close'], 20).iloc[-1]
+    ma50 = sma(df['close'], 50).iloc[-1]
+    ma200 = sma(df['close'], 200).iloc[-1]
+    rsi_val = rsi(df['close']).iloc[-1]
+    
+    score = 50
+    if price < ma200: score -= 30
+    elif price > ma200: score += 15
+    if price < ma50: score -= 10
+    else: score += 10
+    if price < ma20: score -= 10
+    else: score += 15
+    if rsi_val < 35: score += 10
+    if rsi_val > 70: score -= 10
+    
+    score = max(0, min(100, score))
+    detail = f"MA200 ${ma200:.4f} | MA20 ${ma20:.4f} | RSI {rsi_val:.1f}"
+    return score, detail
+
+def engine_smc(df):
+    # BOS/CHOCH + FVG + OB - obiektywna struktura
+    highs = df['high'].rolling(3).max()
+    lows = df['low'].rolling(3).min()
+    
+    # Czy mamy Higher Low na LTF? (BOS)
+    last_low = lows.iloc[-2]
+    curr_low = df['low'].iloc[-1]
+    bos_bull = curr_low > last_low
+    
+    # FVG detection - ostatnia luka
+    fvg_up = df['high'].iloc[-3] < df['low'].iloc[-1]
+    
+    score = 50
+    if bos_bull: score += 15
+    if fvg_up: score += 10
+    # Order Block - strefa $0.071-0.073
+    if df['close'].iloc[-1] < 0.076: score += 5  # w dyskoncie OB
+    
+    score = max(0, min(100, score))
+    detail = f"{'BOS LTF bullish' if bos_bull else 'BOS bearish'} | OB $0.071-0.073 | FVG {'$0.078' if fvg_up else 'brak'}"
+    return score, detail
+
+def engine_volume(df):
+    price = df['close'].iloc[-1]
+    vol = df['volume']
+    vol_trend_down = vol.iloc[-1] < vol.iloc[-3] < vol.iloc[-5]
+    
+    rsi_val = rsi(df['close']).iloc[-1]
+    # dywergencja: cena niżej, RSI wyżej
+    price_ll = df['close'].iloc[-1] < df['close'].iloc[-5]
+    rsi_hl = rsi(df['close']).iloc[-1] > rsi(df['close']).iloc[-5]
+    bullish_div = price_ll and rsi_hl
+    
+    # VWAP / POC approximation
+    vwap = (df['close'] * df['volume']).sum() / df['volume'].sum()
+    
+    score = 50
+    if vol_trend_down: score += 15  # koniec podaży
+    if bullish_div: score += 10
+    if price < vwap: score += 5  # dyskonto
+    
+    score = max(0, min(100, score))
+    detail = f"Vol {vol.iloc[-3]:.0f}->{vol.iloc[-1]:.0f} | Div {bullish_div} | VWAP ${vwap:.4f}"
+    return score, detail
+
+def engine_wyckoff(df):
+    # Phase detection: Spring = test dołka na małym vol
+    price = df['close'].iloc[-1]
+    bb_low, bb_up, bb_mid = bollinger(df['close'])
+    bb_low_val = bb_low.iloc[-1]
+    
+    near_bb_low = price <= bb_low_val * 1.01
+    vol_low = df['volume'].iloc[-1] < df['volume'].rolling(20).mean().iloc[-1] * 0.7
+    
+    score = 50
+    phase = "Markup"
+    if near_bb_low and vol_low:
+        score = 60
+        phase = "Phase C - Spring"
+    elif price < sma(df['close'], 200).iloc[-1]:
+        score = 55
+        phase = "Phase C - Accumulation"
+    
+    detail = f"{phase} | LPS ${bb_low_val:.4f} | Test podaży {vol_low}"
+    return score, detail
+
+# --- MAIN ---
+def analyze():
+    ex = ccxt.binance()
+    ohlcv = ex.fetch_ohlcv(SYMBOL, TIMEFRAME, limit=250)
+    df = pd.DataFrame(ohlcv, columns=['ts','open','high','low','close','volume'])
+    
+    s1, d1 = engine_trend(df)
+    s2, d2 = engine_smc(df)
+    s3, d3 = engine_volume(df)
+    s4, d4 = engine_wyckoff(df)
+    
+    final = s1*0.30 + s2*0.25 + s3*0.25 + s4*0.20
+    
+    if final < 30: sig = "HARD SELL 10/100"
+    elif final < 45: sig = "SOFT SELL / DOŁEK 35/100"
+    elif final < 55: sig = "NEUTRAL / AKUMULACJA 49/100"
+    elif final < 75: sig = "BUY SETUP 65/100"
+    else: sig = "HARD BUY 90/100"
+    
+    price = df['close'].iloc[-1]
+    print(f"PYTH ${price:.4f} | FINAL {final:.0f} | {sig}")
+    print(f"1 TREND {s1}: {d1}")
+    print(f"2 SMC {s2}: {d2}")
+    print(f"3 VOL {s3}: {d3}")
+    print(f"4 WYCKOFF {s4}: {d4}")
+    print(f"Plan: L1 $0.0747-$0.072 | L2 >MA200 ${sma(df['close'],200).iloc[-1]:.4f} | TP $0.078-$0.082")
+    
+    return final, sig
+
+if __name__ == "__main__":
+    while True:
         try:
-            r=requests.get(url,timeout=10).json()
-            if isinstance(r,list) and len(r)>=50: return r
-        except: pass
-    return None
-def get_coingecko():
-    try:
-        url="https://api.coingecko.com/api/v3/coins/pyth-network?localization=false&tickers=false&market_data=true&community_data=false&developer_data=false"
-        r=requests.get(url,timeout=10).json(); md=r['market_data']
-        return md['current_price']['usd'], md['price_change_percentage_24h'], md['market_cap']['usd']/1e9, md['total_volume']['usd']/1e6
-    except: return 0.0769,-0.3,0.607,34.1
-def get_funding():
-    funding=0.01
-    for d in ["https://fapi.binance.com","https://data-api.binance.vision"]:
-        try:
-            r=requests.get(f"{d}/fapi/v1/premiumIndex?symbol=PYTHUSDT",timeout=5).json()
-            if 'lastFundingRate' in r:
-                return float(r['lastFundingRate'])*100
-        except: pass
-    return funding
-def get_tvs():
-    try:
-        r=requests.get("https://api.llama.fi/protocol/pyth-network",timeout=10).json()
-        tvs=float(r.get('tvl',3.589e9))/1e9
-        return tvs if tvs>0.1 else 3.589
-    except: return 3.589
-def send_telegram(text):
-    token=os.getenv("TELEGRAM_TOKEN"); chat=os.getenv("TELEGRAM_CHAT_ID")
-    if token and chat:
-        try: requests.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id":chat,"text":text})
-        except: pass
-
-kl=get_klines(); closes=[float(x[4]) for x in kl]; vols=[float(x[5]) for x in kl]
-price_cg, change_24h, mcap, vol_cg = get_coingecko()
-price = closes[-1] if closes else price_cg
-funding = get_funding()
-tvs = get_tvs()
-
-r=rsi(closes); ma20=sma(closes,20); ma50=sma(closes,50); ma200=sma(closes,200)
-ml,sig,hist=macd_calc(closes); bb_low,bb_mid,bb_high=bollinger(closes)
-vol_avg=sma(vols,20); vol_now=vols[-1]
-
-score=50; reasons=[]; level1=[]; level2=[]
-
-if change_24h>3: score+=5
-elif change_24h<-5: score-=5
-
-if price>ma20>ma50>ma200: score+=20; reasons.append("Golden Stack MA20>MA50>MA200")
-elif price>ma50 and ma50>ma200: score+=10; reasons.append("Trend bullish >MA50>MA200")
-elif price<ma20: score-=15; reasons.append("Cena <MA20 - krotka korekta"); level1.append("ponizej MA20")
-if price<ma200: score-=15; reasons.append("Ponizej MA200 - dlugi trend pekl"); level2.append("ponizej MA200 = HARD")
-
-if 50<r<70: score+=15; reasons.append(f"RSI {r:.1f} momentum OK")
-elif r<30: score+=20; reasons.append(f"RSI {r:.1f} OVERSOLD DIP"); level1.append("RSI oversold")
-elif r>78: score-=20; reasons.append(f"RSI {r:.1f} OVERBOUGHT TP"); level2.append("RSI overbought")
-elif r>70: score-=10; level1.append("RSI wysoki")
-
-if hist>0 and ml>sig: score+=15; reasons.append("MACD bullish")
-elif hist<0 and ml<sig: score-=10; reasons.append("MACD bearish"); level1.append("MACD bearish")
-
-if bb_low<=price<=bb_mid: score+=5; reasons.append("Dolna BB - akumulacja")
-elif bb_mid<price<bb_high: score+=10; reasons.append("Gorna BB - zdrowy")
-elif price>=bb_high: score-=10; reasons.append("Gorna BB - cofka"); level1.append("gorna BB")
-elif price<=bb_low: score+=15; reasons.append("Dolna BB - odbicie"); level1.append("dolna BB")
-
-if vol_now>vol_avg*1.8: score+=10; reasons.append("Volume spike")
-elif vol_now<vol_avg*0.5: score-=5; reasons.append("Niski vol"); level1.append("niski vol")
-
-if funding>0.05: score-=20; reasons.append(f"Funding {funding:.4f}% EXTREME LONG"); level2.append(f"Funding {funding:.3f}% HARD")
-elif funding>0.02: score-=10; reasons.append(f"Funding {funding:.4f}% wysoki"); level1.append(f"Funding {funding:.3f}%")
-elif funding<-0.02: score+=15; reasons.append(f"Funding {funding:.4f}% SHORT SQUEEZE")
-else: reasons.append(f"Funding {funding:.4f}% neutralny")
-
-score=max(0,min(100,score))
-
-if score>=80: lvl="HARD BUY"; action="Mocny KUPNA"
-elif score>=60: lvl="SOFT BUY"; action="Nie panikuj - akumulacja"
-elif score<=20: lvl="HARD SELL"; action="Krytyczny - rozwaz TP / nie kupuj"
-elif score<=40: lvl="SOFT SELL"; action="Nie panikuj - tylko korekta"
-else: lvl="NEUTRAL"; action="Trzymaj"
-
-now = datetime.now(); hour_utc = now.hour
-is_daily = hour_utc in [5, 10, 17]
-is_hard = score >= 80 or score <= 20
-
-if is_daily:
-    daily_name = {5:"PORANNY 7:00",10:"POLUDNIOWY 12:00",17:"WIECZORNY 19:00"}[hour_utc]
-elif is_hard:
-    daily_name = f"ALERT HARD {lvl}"
-else:
-    print(f"[{now.strftime('%d.%m.%Y %H:%M')}] {price:.4f}$ | {score}/100 {lvl} SKIP")
-    sys.exit(0)
-
-msg=f"PYTH {daily_name} {score}/100 - {now.strftime('%d.%m.%Y %H:%M')}\n\n"
-msg+=f"Cena: {price:.4f}$ ({change_24h:+.2f}%) RSI {r:.1f}\n"
-msg+=f"MA20 {ma20:.4f} | MA200 {ma200:.4f} | BB {bb_low:.4f}-{bb_high:.4f}\n"
-msg+=f"FUTURES: Funding {funding:+.4f}% [LIVE] | TVS ${tvs:.2f}B\n\n"
-msg+=f"POZIOM: {lvl}\nCo to znaczy: {action}\n\n"
-if level1: msg+=f"SOFT: {', '.join(level1)}\n"
-if level2: msg+=f"HARD: {', '.join(level2)}\n"
-msg+=f"\n" + "\n".join([f"- {x}" for x in reasons])
-
-print(msg)
-send_telegram(msg)
+            analyze()
+            time.sleep(60*15) # 15m
+        except Exception as e:
+            print(f"ERR {e}")
+            time.sleep(60)
