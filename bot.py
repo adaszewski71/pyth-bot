@@ -48,27 +48,36 @@ def get_coingecko():
         return md['current_price']['usd'], md['price_change_percentage_24h'], md['market_cap']['usd']/1e9, md['total_volume']['usd']/1e6
     except: return 0.0769,-0.3,0.607,34.1
 def get_futures_live(price):
-    funding=0.01; oi=45.2; ls_ratio=1.0; ls_accounts=1.0
+    funding=0.01; oi=0; ls_acc=0; ls_pos=0
+    ok_funding=False; ok_oi=False; ok_ls=False
+    domains=["https://fapi.binance.com","https://data-api.binance.vision","https://api.binance.com"]
+    for d in domains:
+        try:
+            if not ok_funding:
+                r=requests.get(f"{d}/fapi/v1/premiumIndex?symbol=PYTHUSDT",timeout=5).json()
+                if 'lastFundingRate' in r:
+                    funding=float(r['lastFundingRate'])*100; ok_funding=True
+        except: pass
+        try:
+            if not ok_oi:
+                r=requests.get(f"{d}/fapi/v1/openInterest?symbol=PYTHUSDT",timeout=5).json()
+                if 'openInterest' in r:
+                    oi=float(r['openInterest'])*price/1e6; ok_oi=True
+        except: pass
+        if ok_funding and ok_oi: break
+    for d in ["https://fapi.binance.com","https://data-api.binance.vision"]:
+        try:
+            if not ok_ls:
+                r=requests.get(f"{d}/futures/data/globalLongShortAccountRatio?symbol=PYTHUSDT&period=5m&limit=1",timeout=5).json()
+                if isinstance(r,list) and len(r)>0 and 'longShortRatio' in r[0]:
+                    ls_acc=float(r[0]['longShortRatio']); ok_ls=True; break
+        except: pass
     try:
-        prem=requests.get("https://fapi.binance.com/fapi/v1/premiumIndex?symbol=PYTHUSDT",timeout=10).json()
-        funding=float(prem.get('lastFundingRate',0.0001))*100
+        r=requests.get("https://fapi.binance.com/futures/data/topLongShortPositionRatio?symbol=PYTHUSDT&period=5m&limit=1",timeout=5).json()
+        if isinstance(r,list) and len(r)>0:
+            ls_pos=float(r[0].get('longShortRatio',0))
     except: pass
-    try:
-        oi_r=requests.get("https://fapi.binance.com/fapi/v1/openInterest?symbol=PYTHUSDT",timeout=10).json()
-        oi=float(oi_r.get('openInterest',0))*price/1e6
-        if oi<1: oi=45.2
-    except: pass
-    try:
-        ls=requests.get("https://fapi.binance.com/futures/data/globalLongShortAccountRatio?symbol=PYTHUSDT&period=5m&limit=1",timeout=10).json()
-        if isinstance(ls,list) and len(ls)>0:
-            ls_accounts=float(ls[0].get('longShortRatio',1.0))
-    except: pass
-    try:
-        ls2=requests.get("https://fapi.binance.com/futures/data/topLongShortPositionRatio?symbol=PYTHUSDT&period=5m&limit=1",timeout=10).json()
-        if isinstance(ls2,list) and len(ls2)>0:
-            ls_ratio=float(ls2[0].get('longShortRatio',1.0))
-    except: pass
-    return funding, oi, ls_accounts, ls_ratio
+    return funding, oi, ls_acc, ls_pos, ok_funding, ok_oi, ok_ls
 def get_tvs():
     try:
         r=requests.get("https://api.llama.fi/protocol/pyth-network",timeout=10).json()
@@ -88,7 +97,7 @@ def send_telegram(text):
 kl=get_klines(); closes=[float(x[4]) for x in kl]; vols=[float(x[5]) for x in kl]
 price_cg, change_24h, mcap, vol_cg = get_coingecko()
 price = closes[-1] if closes else price_cg
-funding, oi_live, ls_acc, ls_pos = get_futures_live(price)
+funding, oi_live, ls_acc, ls_pos, ok_funding, ok_oi, ok_ls = get_futures_live(price)
 tvs = get_tvs()
 
 r=rsi(closes); ma20=sma(closes,20); ma50=sma(closes,50); ma200=sma(closes,200)
@@ -123,25 +132,20 @@ elif price<=bb_low: score+=15; reasons.append("Dolna BB - odbicie"); level1.appe
 if vol_now>vol_avg*1.8: score+=10; reasons.append("Volume spike")
 elif vol_now<vol_avg*0.5: score-=5; reasons.append("Niski vol"); level1.append("niski vol")
 
-# FUTURES LIVE SCORING
 if funding>0.05: score-=20; reasons.append(f"Funding {funding:.4f}% EXTREME LONG"); level2.append(f"Funding {funding:.3f}% HARD")
 elif funding>0.02: score-=10; reasons.append(f"Funding {funding:.4f}% wysoki"); level1.append(f"Funding {funding:.3f}%")
 elif funding<-0.02: score+=15; reasons.append(f"Funding {funding:.4f}% SHORT SQUEEZE"); level1.append(f"Funding {funding:.3f}% squeeze")
 else: reasons.append(f"Funding {funding:.4f}% neutralny")
 
-if oi_live>80: reasons.append(f"OI ${oi_live:.1f}M bardzo wysokie - duza dzwignia"); level2.append(f"OI ${oi_live:.0f}M HIGH")
-elif oi_live<20: level1.append(f"OI ${oi_live:.0f}M niskie")
-
-if ls_acc>2.0: score-=15; reasons.append(f"L/S Accounts {ls_acc:.2f} tlum LONG"); level2.append(f"L/S {ls_acc:.2f} crowd LONG")
-elif ls_acc<0.8: score+=10; reasons.append(f"L/S Accounts {ls_acc:.2f} tlum SHORT - squeeze?"); level1.append(f"L/S {ls_acc:.2f} crowd SHORT")
-else: reasons.append(f"L/S {ls_acc:.2f} balanced")
-
-if ls_pos>2.5: score-=10; level1.append(f"Top Pos L/S {ls_pos:.2f} LONG heavy")
-elif ls_pos<0.7: score+=10; level1.append(f"Top Pos L/S {ls_pos:.2f} SHORT heavy")
+if ok_oi and oi_live>80: reasons.append(f"OI ${oi_live:.1f}M bardzo wysokie"); level2.append(f"OI ${oi_live:.0f}M HIGH")
+if ok_ls:
+    if ls_acc>2.0: score-=15; reasons.append(f"L/S {ls_acc:.2f} tlum LONG"); level2.append(f"L/S {ls_acc:.2f} crowd LONG")
+    elif ls_acc<0.8: score+=10; reasons.append(f"L/S {ls_acc:.2f} tlum SHORT"); level1.append(f"L/S {ls_acc:.2f} crowd SHORT")
+    else: reasons.append(f"L/S {ls_acc:.2f} balanced")
 
 score=max(0,min(100,score))
 
-if score>=80: lvl="HARD BUY"; action="Mocny KUPNA - squeeze + potwierdzony"
+if score>=80: lvl="HARD BUY"; action="Mocny KUPNA - potwierdzony"
 elif score>=60: lvl="SOFT BUY"; action="Nie panikuj - akumulacja"
 elif score<=20: lvl="HARD SELL"; action="Krytyczny - rozwaz TP / nie kupuj"
 elif score<=40: lvl="SOFT SELL"; action="Nie panikuj - tylko korekta"
@@ -163,11 +167,15 @@ else:
     print(f"[{now.strftime('%d.%m.%Y %H:%M')}] {price:.4f}$ | {score}/100 {lvl} SKIP")
     sys.exit(0)
 
+oi_str = f"${oi_live:.1f}M [LIVE]" if ok_oi and oi_live>0 else "N/A (blocked)"
+ls_str = f"{ls_acc:.2f} [LIVE]" if ok_ls and ls_acc>0 else "N/A (blocked)"
+top_str = f"{ls_pos:.2f}" if ls_pos>0 else "N/A"
+
 msg=f"PYTH {daily_name} {score}/100 - {now.strftime('%d.%m.%Y %H:%M')}\n\n"
 msg+=f"Cena: {price:.4f}$ ({change_24h:+.2f}%) RSI {r:.1f}\n"
 msg+=f"MA20 {ma20:.4f} | MA200 {ma200:.4f} | BB {bb_low:.4f}-{bb_high:.4f}\n"
-msg+=f"FUTURES LIVE: Funding {funding:+.4f}% | OI ${oi_live:.1f}M\n"
-msg+=f"L/S Acc {ls_acc:.2f} | Top Pos {ls_pos:.2f} | TVS ${tvs:.2f}B\n\n"
+msg+=f"FUTURES: Funding {funding:+.4f}% | OI {oi_str}\n"
+msg+=f"L/S Acc {ls_str} | Top Pos {top_str} | TVS ${tvs:.2f}B\n\n"
 msg+=f"POZIOM: {lvl}\nCo to znaczy: {action}\n\n"
 if level1: msg+=f"SOFT: {', '.join(level1)}\n"
 if level2: msg+=f"HARD: {', '.join(level2)}\n"
