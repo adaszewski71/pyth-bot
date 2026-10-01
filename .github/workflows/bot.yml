@@ -1,15 +1,19 @@
-name: PYTH Bot
+name: PYTH Bot v7.2
+
 on:
   schedule:
-    - cron: '*/15 * * * *' # co 15 min sprawdza
-  workflow_dispatch: # ręczne uruchomienie
+    - cron: '0 5 * * *'
+    - cron: '0 10 * * *'
+    - cron: '0 17 * * *'
+    - cron: '0 */2 * * *'
+  workflow_dispatch:
 
 jobs:
-  run:
+  run-bot:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v4
         with:
           python-version: '3.11'
       - run: pip install requests
