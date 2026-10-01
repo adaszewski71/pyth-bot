@@ -1,6 +1,4 @@
-# PYTH BOT v8.5 FINAL - 5 ENGINES + ORACLE INDEX + COMPETITOR SIGNALS
-# FINAL = TREND 25% + SMC 20% + VOLUME 20% + WYCKOFF 15% + COMPETITOR 20%
-
+# PYTH BOT v8.5.1 FINAL FIXED - 5 ENGINES + ORACLE INDEX + COMPETITOR
 import pandas as pd
 import requests, yaml, os, json
 from datetime import datetime
@@ -78,8 +76,8 @@ def engine_trend(df):
     else: score+=15
     if price<ma20: score-=10
     else: score+=15
-    dist200=(price-ma200)/ma200*100
-    dist20=(price-ma20)/ma20*100
+    dist200=(price-ma200)/ma200*100 if ma200 else 0
+    dist20=(price-ma20)/ma20*100 if ma20 else 0
     detail=f"BEAR pod MA200 {dist200:+.2f}% (${ma200:.4f}) i {dist20:+.2f}% od MA20. Dopóki <MA200 brak L2."
     bias="SELL" if score<35 else "BUY" if score>65 else "NEUTRAL"
     return max(0,min(100,score)), detail, bias, ma200, ma20
@@ -88,92 +86,89 @@ def engine_smc(df):
     bos_bull=df['low'].iloc[-1] > df['low'].rolling(3).min().iloc[-3]
     ob_low=df['low'].rolling(20).min().iloc[-1]
     score=50 + (15 if bos_bull else -5) + (5 if df['close'].iloc[-1]<0.076 else 0)
-    detail=f"BOS {'bullish dołek wyżej' if bos_bull else 'bearish'} | OB $0.071-0.073 low ${ob_low:.4f} | Cena ${df['close'].iloc[-1]:.4f} w bloku = L1"
+    detail=f"BOS {'bullish dołek wyżej' if bos_bull else 'bearish, brak wyższego dołka'} | OB $0.071-0.073 low ${ob_low:.4f} | Cena ${df['close'].iloc[-1]:.4f} w bloku = L1"
     return max(0,min(100,score)), detail, "BUY" if score>60 else "NEUTRAL"
 
 def engine_volume(df):
     vol_ma=df['volume'].rolling(20).mean().iloc[-1]
-    ratio=df['volume'].iloc[-1]/vol_ma
+    ratio=df['volume'].iloc[-1]/vol_ma if vol_ma else 1
     score=50
     if ratio<0.5: score+=15
+    elif ratio>1.5: score-=5
     vwap=(df['close']*df['volume']).sum()/df['volume'].sum()
-    detail=f"Vol {ratio:.2f}x avg 20H wysycha -> brak podaży | VWAP ${vwap:.4f} +{((df['close'].iloc[-1]-vwap)/vwap*100):+.2f}%"
+    vol_txt="wysycha -> brak podaży, akumulacja" if ratio<0.6 else "podwyższony -> ktoś sprzedaje, uważaj" if ratio>1.3 else "neutralny"
+    detail=f"Vol {ratio:.2f}x avg 20H {vol_txt} | VWAP ${vwap:.4f} {((df['close'].iloc[-1]-vwap)/vwap*100):+.2f}%"
     return max(0,min(100,score)), detail, "BUY" if ratio<0.5 else "NEUTRAL"
 
 def engine_wyckoff(df):
     bb_low,_,_=bollinger(df['close'])
     near=df['close'].iloc[-1] <= bb_low.iloc[-1]*1.015
     score=60 if near else 55
-    detail=f"Phase C Spring | Boll dolny ${bb_low.iloc[-1]:.4f} | {'dotyka' if near else 'nad'} wstęgą = {'wyprzedanie' if near else 'akumulacja'}"
+    detail=f"Phase C Spring | Boll dolny ${bb_low.iloc[-1]:.4f} | {'dotyka' if near else 'nad'} wstęgą = wyprzedanie"
     return score, detail, "BUY"
 
 def engine_competitor():
     try:
         data={}
         for sym in ORACLE_BASKET:
-            df=fetch_ohlcv(sym,'1h',100)
+            df=fetch_ohlcv(sym,'1h',250)
             data[sym]=df
-
-        # zwroty 24h
         rets={}
         for sym,df in data.items():
             rets[sym]=(df['close'].iloc[-1]/df['close'].iloc[-24]-1)*100 if len(df)>=25 else 0
 
-        # korelacje PYTH vs LINK na 24h close
-        pyth_close=data['PYTHUSDT']['close'].tail(24)
-        link_close=data['LINKUSDT']['close'].tail(24)
-        red_close=data['REDUSDT']['close'].tail(24) if 'REDUSDT' in data else pyth_close
-        corr_link=np.corrcoef(pyth_close, link_close)[0,1] if len(pyth_close)==len(link_close) else 0.8
-        corr_red=np.corrcoef(pyth_close, red_close)[0,1] if len(red_close)==24 else 0.75
+        pyth_close=data['PYTHUSDT']['close'].tail(24).values
+        link_close=data['LINKUSDT']['close'].tail(24).values
+        corr_link=float(np.corrcoef(pyth_close, link_close)[0,1]) if len(pyth_close)==24 else 0.8
+        if np.isnan(corr_link): corr_link=0.8
 
-        # LINK LEAD - czy wybił MA200
         link_price=data['LINKUSDT']['close'].iloc[-1]
         link_ma200=sma(data['LINKUSDT']['close'],200).iloc[-1]
+        if pd.isna(link_ma200): link_ma200=link_price
         link_ma20=sma(data['LINKUSDT']['close'],20).iloc[-1]
         link_vol_ratio=data['LINKUSDT']['volume'].iloc[-1]/data['LINKUSDT']['volume'].rolling(20).mean().iloc[-1]
+        if pd.isna(link_vol_ratio): link_vol_ratio=1.0
         link_breakout = link_price > link_ma200 and link_price > link_ma20 and link_vol_ratio > 1.5
 
-        # RED PUMP
         red_ret=rets.get('REDUSDT',0)
         red_pump = red_ret > 8
-
-        # ORACLE INDEX return
-        idx_ret=sum(rets[s]*w for s,w in ORACLE_BASKET.items())
+        idx_ret=sum(rets.get(s,0)*w for s,w in ORACLE_BASKET.items())
         pyth_dec=rets.get('PYTHUSDT',0)-idx_ret
 
-        # Dependency scoring
         score=50
         signals=[]
+        dist_link=(link_price-link_ma200)/link_ma200*100 if link_ma200 else 0
+
         if link_breakout:
             score+=20
-            signals.append(f"LINK LEAD BREAKOUT ${link_price:.2f}>MA200 ${link_ma200:.2f} vol {link_vol_ratio:.1f}x -> PYTH ma 87% szans na wybicie w 4h (lag)")
+            signals.append(f"LINK LEAD BREAKOUT ${link_price:.2f}>MA200 ${link_ma200:.2f} ({dist_link:+.2f}%) vol {link_vol_ratio:.1f}x -> PYTH 87% szans na wybicie w 4h")
         else:
-            if link_price < link_ma200:
-                signals.append(f"LINK pod MA200 {((link_price-link_ma200)/link_ma200*100):+.2f}% -> sektor słaby, PYTH będzie lagował")
+            if dist_link<0:
+                signals.append(f"LINK pod MA200 {dist_link:+.2f}% (${link_ma200:.2f}) -> sektor słaby, PYTH będzie lagował")
             else:
-                signals.append(f"LINK nad MA200 +{((link_price-link_ma200)/link_ma200*100):+.2f}% -> sektor trzyma, baza dla PYTH")
+                signals.append(f"LINK nad MA200 {dist_link:+.2f}% (${link_ma200:.2f}) vol {link_vol_ratio:.1f}x -> sektor trzyma, baza dla PYTH")
 
         if red_pump:
             score+=10
-            signals.append(f"RED PUMP +{red_ret:.1f}% vs PYTH {rets.get('PYTHUSDT',0):+.1f}% -> RED lead, PYTH lagging, spodziewany catch-up +5-7% w 24h")
+            signals.append(f"RED PUMP +{red_ret:.1f}% vs PYTH {rets.get('PYTHUSDT',0):+.1f}% -> RED lead, PYTH lagging, catch-up +5-7% w 24h")
 
         if pyth_dec > 2:
             score+=10
-            signals.append(f"PYTH STRONGER {pyth_dec:+.1f}% vs INDEX -> decoupling bullish, PYTH przejmuje narrację")
+            signals.append(f"PYTH STRONGER {pyth_dec:+.1f}% vs INDEX -> decoupling bullish")
         elif pyth_dec < -2:
             score-=10
-            signals.append(f"PYTH WEAKER {pyth_dec:+.1f}% vs INDEX -> PYTH słabszy, nie wchodź na L2 bez LINK")
+            signals.append(f"PYTH WEAKER {pyth_dec:+.1f}% vs INDEX -> słabszy od sektora, nie wchodź na L2 bez LINK")
 
         if corr_link > 0.8:
-            signals.append(f"KORELACJA PYTH/LINK {corr_link:.2f} HIGH - ruchy razem, sektor spójny")
+            signals.append(f"KORELACJA {corr_link:.2f} HIGH - ruchy razem, sektor spójny")
         elif corr_link < 0.6:
             score+=5
-            signals.append(f"KORELACJA {corr_link:.2f} LOW - rozjazd = duża vola idzie, uważaj na L1/L2")
+            signals.append(f"KORELACJA {corr_link:.2f} LOW - rozjazd = duża vola idzie, 50% L1 tylko")
         else:
             signals.append(f"KORELACJA {corr_link:.2f} MED - normalna zależność")
 
         detail=" | ".join(signals)
-        detail+=f"\nRET 24h: LINK {rets.get('LINKUSDT',0):+.1f}% PYTH {rets.get('PYTHUSDT',0):+.1f}% RED {rets.get('REDUSDT',0):+.1f}% API3 {rets.get('API3USDT',0):+.1f}% | INDEX {idx_ret:+.2f}% | PYTH vs IDX {pyth_dec:+.2f}%"
+        detail+=f"\nRET 24h: LINK {rets.get('LINKUSDT',0):+.1f}% PYTH {rets.get('PYTHUSDT',0):+.1f}% RED {rets.get('REDUSDT',0):+.1f}% API3 {rets.get('API3USDT',0):+.1f}% | INDEX {idx_ret:+.2f}% | DEC {pyth_dec:+.2f}%"
 
         bias="BUY" if score>60 else "SELL" if score<40 else "NEUTRAL"
         return max(0,min(100,int(score))), detail, bias, idx_ret, pyth_dec, rets, corr_link
@@ -188,8 +183,6 @@ def analyze():
     s3,d3,b3=engine_volume(df)
     s4,d4,b4=engine_wyckoff(df)
     s5,d5,b5,idx_ret,pyth_dec,rets,corr=engine_competitor()
-
-    # NOWE WAGI 5 ENGINES
     final=s1*0.25 + s2*0.20 + s3*0.20 + s4*0.15 + s5*0.20
 
     if final<30: sig="HARD SELL 10/100"
@@ -198,8 +191,8 @@ def analyze():
     elif final<75: sig="BUY SETUP 65/100"
     else: sig="HARD BUY 90/100"
 
-    msg=f"""PYTH v8.5 ${price:.4f} - {sig}
-FINAL: {final:.0f}/100 | ORACLE IDX {idx_ret:+.2f}% | PYTHvsIDX {pyth_dec:+.2f}%
+    msg=f"""PYTH v8.5.1 ${price:.4f} - {sig}
+FINAL: {final:.0f}/100 | ORACLE IDX {idx_ret:+.2f}% | PYTHvsIDX {pyth_dec:+.2f}% | CORR {corr:.2f}
 
 1 TREND 25% {s1}/100 {b1}
 {d1}
@@ -213,13 +206,13 @@ FINAL: {final:.0f}/100 | ORACLE IDX {idx_ret:+.2f}% | PYTHvsIDX {pyth_dec:+.2f}%
 4 WYCKOFF 15% {s4}/100 {b4}
 {d4}
 
-5 COMPETITOR 20% {s5}/100 {b5} [NOWE - zależności]
+5 COMPETITOR 20% {s5}/100 {b5}
 {d5}
 
 PLAN 3 TURY:
-L1 $0.0747-$0.072 (jeśli LINK trzyma MA200 i corr >0.7)
-L2 >MA200 ${ma200:.4f} + LINK breakout = L2 valid nawet bez PYTH MA200
-TP $0.0769 (MA20) -> $0.078 -> $0.082 (+$0.089 jeśli RED PUMP)
+L1 $0.0747-$0.072 (50% jeśli CORR<0.6 i PYTH WEAKER)
+L2 >MA200 ${ma200:.4f} + LINK breakout = L2 valid
+TP $0.0769 (MA20) -> $0.078 -> $0.082
 SL 4h close <$0.071 i LINK <MA200
 Time {datetime.now().strftime('%Y-%m-%d %H:%M')}
 """
