@@ -1,5 +1,5 @@
-# PYTH BOT v8.3 FINAL - BOGATE OPISY + 4 ENGINES + ANTI-SPAM + 3 TURY
-# FINAL 38 zachowany, Fix WAF
+# PYTH BOT v8.4 FINAL - 4 ENGINES + ORACLE INDEX + VOLATILITY
+# FINAL 38-42 + SEKTOR ORACLE
 
 import pandas as pd
 import requests
@@ -12,6 +12,15 @@ SYMBOL = 'PYTHUSDT'
 TIMEFRAME = '1h'
 CONFIG_FILE = 'config.yml'
 STATE_FILE = 'last_signal.json'
+
+ORACLE_BASKET = {
+    "LINKUSDT": 0.45,
+    "PYTHUSDT": 0.25,
+    "REDUSDT": 0.15,
+    "API3USDT": 0.07,
+    "BANDUSDT": 0.04,
+    "TRBUSDT": 0.04
+}
 
 def load_config():
     if os.path.exists(CONFIG_FILE):
@@ -37,7 +46,6 @@ def fetch_ohlcv(symbol=SYMBOL, interval=TIMEFRAME, limit=250):
         f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}",
         f"https://data-api.binance.vision/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
     ]
-    last_error = None
     for url in urls:
         try:
             r = requests.get(url, headers=headers, timeout=15)
@@ -47,13 +55,37 @@ def fetch_ohlcv(symbol=SYMBOL, interval=TIMEFRAME, limit=250):
                 for col in ['open','high','low','close','volume']:
                     df[col] = df[col].astype(float)
                 df['ts'] = pd.to_datetime(df['ts'], unit='ms')
-                print(f"OK fetched from {url} rows={len(df)}")
                 return df
-            last_error = data
-        except Exception as e:
-            last_error = e
+        except:
             continue
-    raise Exception(f"Cannot fetch klines: {last_error}")
+    raise Exception(f"Cannot fetch {symbol}")
+
+def fetch_oracle_index():
+    prices = {}
+    returns_24h = {}
+    for sym in ORACLE_BASKET:
+        try:
+            df = fetch_ohlcv(sym, '1h', 30)
+            prices[sym] = df['close'].iloc[-1]
+            returns_24h[sym] = (df['close'].iloc[-1] / df['close'].iloc[-24] - 1) * 100 if len(df) >= 25 else 0
+        except:
+            prices[sym] = 0
+            returns_24h[sym] = 0
+
+    # Index jako ważona suma zwrotów 24h
+    index_return = sum(returns_24h[s] * w for s, w in ORACLE_BASKET.items())
+
+    # Volatilność indeksu - std zwrotów 1h z ostatnich 24h
+    try:
+        df_link = fetch_ohlcv("LINKUSDT", "1h", 30)
+        atr_proxy = (df_link['high'] - df_link['low']).rolling(14).mean().iloc[-1] / df_link['close'].iloc[-1] * 100
+    except:
+        atr_proxy = 0
+
+    # Decoupling PYTH vs INDEX
+    pyth_vs_index = returns_24h.get("PYTHUSDT", 0) - index_return
+
+    return index_return, atr_proxy, pyth_vs_index, returns_24h, prices
 
 def sma(series, period):
     return series.rolling(period).mean()
@@ -169,14 +201,34 @@ def analyze():
     s4, d4, b4 = engine_wyckoff(df)
     final = s1*0.30 + s2*0.25 + s3*0.25 + s4*0.20
 
+    # ORACLE INDEX
+    try:
+        idx_ret, idx_vol, pyth_dec, rets, prices = fetch_oracle_index()
+        oracle_msg = f"ORACLE INDEX 24h {idx_ret:+.2f}% | VOL (ATR%) {idx_vol:.2f}% | PYTH vs SEKTOR {pyth_dec:+.2f}%\n"
+        oracle_msg += f"LINK {rets.get('LINKUSDT',0):+.1f}% PYTH {rets.get('PYTHUSDT',0):+.1f}% RED {rets.get('REDUSDT',0):+.1f}% API3 {rets.get('API3USDT',0):+.1f}%\n"
+        if abs(idx_ret) > 3:
+            oracle_msg += f"⚠️ SEKTOR VOLATILITY HIGH - {'cały sektor pompuje' if idx_ret>0 else 'sektor sell-off, uważaj na L1'} | "
+        if pyth_dec > 2:
+            oracle_msg += "PYTH STRONGER od sektora - decoupling bullish"
+        elif pyth_dec < -2:
+            oracle_msg += "PYTH WEAKER od sektora - słabość"
+        else:
+            oracle_msg += "PYTH zgodny z sektorem"
+    except Exception as e:
+        oracle_msg = f"ORACLE INDEX error {e}"
+        idx_ret = 0
+        pyth_dec = 0
+
     if final < 30: sig = "HARD SELL 10/100"
     elif final < 45: sig = "SOFT SELL / DOLEK 35/100"
     elif final < 55: sig = "NEUTRAL / AKUMULACJA 49/100"
     elif final < 75: sig = "BUY SETUP 65/100"
     else: sig = "HARD BUY 90/100"
 
-    msg = f"""PYTH v8.3 ${price:.4f} - {sig}
+    msg = f"""PYTH v8.4 ${price:.4f} - {sig}
 FINAL: {final:.0f}/100
+
+{oracle_msg}
 
 1 TREND 30% {s1}/100 {b1}
 {d1}
@@ -197,6 +249,7 @@ SL close 4h < $0.071
 Time {datetime.now().strftime('%Y-%m-%d %H:%M')}
 """
     print(msg)
+
     last = 0
     if os.path.exists(STATE_FILE):
         try:
@@ -204,12 +257,12 @@ Time {datetime.now().strftime('%Y-%m-%d %H:%M')}
                 last = json.load(f).get('final', 0)
         except:
             pass
-    if abs(final - last) >= 7 or final < 35 or final > 60:
+    if abs(final - last) >= 7 or final < 35 or final > 60 or abs(idx_ret) > 3:
         send_tg(msg)
         with open(STATE_FILE, 'w') as f:
-            json.dump({"final": float(final), "price": float(price)}, f)
+            json.dump({"final": float(final), "price": float(price), "oracle_idx": float(idx_ret)}, f)
     else:
-        print(f"SKIP alert - {last} -> {final:.0f}")
+        print(f"SKIP - {last} -> {final:.0f} | Oracle {idx_ret:+.2f}%")
     return final
 
 if __name__ == "__main__":
