@@ -1,23 +1,29 @@
-name: PYTH Bot v7.2
+name: PYTH Bot v8.0
 
 on:
   schedule:
-    - cron: '0 5 * * *'
-    - cron: '0 10 * * *'
-    - cron: '0 17 * * *'
-    - cron: '0 */2 * * *'
+    - cron: '*/15 * * * *'  # co 15min
   workflow_dispatch:
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-python@v4
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: pip install requests
-      - run: python bot.py
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas numpy requests pyyaml
+
+      - name: Run bot
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python bot.py
