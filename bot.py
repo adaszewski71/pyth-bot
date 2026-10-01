@@ -1,17 +1,17 @@
-# PYTH BOT v8.1 FINAL FIX - 4 ENGINES OBJECTIVE
-# Fixed Binance WAF on GitHub Actions
+# PYTH BOT v8.2 FINAL - 4 ENGINES + ANTI-SPAM + 3 TURY
+# Fix Binance WAF + FINAL 38 preserved
 
 import pandas as pd
-import numpy as np
 import requests
-import time
 import yaml
 import os
+import json
 from datetime import datetime
 
 SYMBOL = 'PYTHUSDT'
 TIMEFRAME = '1h'
 CONFIG_FILE = 'config.yml'
+STATE_FILE = 'last_signal.json'
 
 def load_config():
     if os.path.exists(CONFIG_FILE):
@@ -24,10 +24,12 @@ def send_tg(msg):
         cfg = load_config()
         token = cfg.get('telegram_token') or os.getenv("TELEGRAM_TOKEN")
         chat_id = cfg.get('chat_id') or os.getenv("TELEGRAM_CHAT_ID")
-        if not token or not chat_id: return
+        if not token or not chat_id:
+            return
         url = f"https://api.telegram.org/bot{token}/sendMessage"
-        requests.post(url, json={"chat_id": chat_id, "text": msg, "parse_mode": "Markdown"})
-    except: pass
+        requests.post(url, json={"chat_id": chat_id, "text": msg, "parse_mode": "Markdown"}, timeout=10)
+    except Exception as e:
+        print(f"TG ERROR: {e}")
 
 def fetch_ohlcv(symbol=SYMBOL, interval=TIMEFRAME, limit=250):
     headers = {"User-Agent": "Mozilla/5.0"}
@@ -51,8 +53,6 @@ def fetch_ohlcv(symbol=SYMBOL, interval=TIMEFRAME, limit=250):
         except Exception as e:
             last_error = e
             continue
-
-    print(f"FETCH FAILED: {last_error}")
     raise Exception(f"Cannot fetch klines: {last_error}")
 
 def sma(series, period):
@@ -76,7 +76,6 @@ def engine_trend(df):
     ma50 = sma(df['close'], 50).iloc[-1]
     ma200 = sma(df['close'], 200).iloc[-1]
     rsi_val = rsi(df['close']).iloc[-1]
-
     score = 50
     if price < ma200: score -= 30
     else: score += 15
@@ -86,7 +85,6 @@ def engine_trend(df):
     else: score += 15
     if rsi_val < 35: score += 10
     if rsi_val > 70: score -= 10
-
     score = max(0, min(100, int(score)))
     detail = f"MA200 ${ma200:.4f} MA20 ${ma20:.4f} RSI {rsi_val:.1f}"
     bias = "SELL" if score < 35 else "BUY" if score > 65 else "NEUTRAL"
@@ -96,12 +94,10 @@ def engine_smc(df):
     lows = df['low'].rolling(3).min()
     bos_bull = df['low'].iloc[-1] > lows.iloc[-3]
     fvg_up = df['high'].iloc[-3] < df['low'].iloc[-1]
-
     score = 50
     if bos_bull: score += 15
     if fvg_up: score += 10
     if df['close'].iloc[-1] < 0.076: score += 5
-
     score = max(0, min(100, int(score)))
     detail = f"{'BOS bull' if bos_bull else 'BOS bear'} OB $0.071-0.073 FVG {'$0.078' if fvg_up else 'brak'}"
     bias = "BUY" if score > 60 else "SELL" if score < 40 else "NEUTRAL"
@@ -114,12 +110,10 @@ def engine_volume(df):
     rsi_hl = rsi(df['close']).iloc[-1] > rsi(df['close']).iloc[-5]
     bullish_div = price_ll and rsi_hl
     vwap = (df['close'] * df['volume']).sum() / df['volume'].sum()
-
     score = 50
     if vol_down: score += 15
     if bullish_div: score += 15
     if df['close'].iloc[-1] < vwap: score += 5
-
     score = max(0, min(100, int(score)))
     detail = f"Vol {vol.iloc[-3]:.0f}->{vol.iloc[-1]:.0f} Div {bullish_div} VWAP ${vwap:.4f}"
     bias = "BUY" if score > 60 else "SELL" if score < 40 else "NEUTRAL"
@@ -131,7 +125,6 @@ def engine_wyckoff(df):
     bb_low_val = bb_low.iloc[-1]
     near_low = price <= bb_low_val * 1.015
     vol_low = df['volume'].iloc[-1] < df['volume'].rolling(20).mean().iloc[-1] * 0.7
-
     score = 50
     phase = "Phase B-C"
     if near_low and vol_low:
@@ -140,7 +133,6 @@ def engine_wyckoff(df):
     elif price < sma(df['close'], 200).iloc[-1]:
         score = 55
         phase = "Accumulation"
-
     detail = f"{phase} LPS ${bb_low_val:.4f} VolLow {vol_low}"
     bias = "BUY" if score >= 55 else "NEUTRAL"
     return score, detail, bias
@@ -148,12 +140,10 @@ def engine_wyckoff(df):
 def analyze():
     df = fetch_ohlcv()
     price = df['close'].iloc[-1]
-
     s1, d1, b1, ma200, ma20 = engine_trend(df)
     s2, d2, b2 = engine_smc(df)
     s3, d3, b3 = engine_volume(df)
     s4, d4, b4 = engine_wyckoff(df)
-
     final = s1*0.30 + s2*0.25 + s3*0.25 + s4*0.20
 
     if final < 30: sig = "HARD SELL 10/100"
@@ -162,7 +152,7 @@ def analyze():
     elif final < 75: sig = "BUY SETUP 65/100"
     else: sig = "HARD BUY 90/100"
 
-    msg = f"""PYTH v8.1 ${price:.4f} - {sig}
+    msg = f"""PYTH v8.2 ${price:.4f} - {sig}
 FINAL: {final:.0f}/100
 
 1 TREND 30% {s1}/100 {b1}
@@ -174,14 +164,29 @@ FINAL: {final:.0f}/100
 4 WYCKOFF 20% {s4}/100 {b4}
 {d4}
 
-PLAN:
+PLAN 3 TURY:
 L1 $0.0747-$0.072 | L2 >MA200 ${ma200:.4f}
 TP $0.0769 (MA20) -> $0.078 FVG -> $0.082
 SL close 4h < $0.071
 Time {datetime.now().strftime('%Y-%m-%d %H:%M')}
 """
     print(msg)
-    send_tg(msg)
+
+    last = 0
+    if os.path.exists(STATE_FILE):
+        try:
+            with open(STATE_FILE) as f:
+                last = json.load(f).get('final', 0)
+        except:
+            pass
+
+    if abs(final - last) >= 7 or final < 35 or final > 60:
+        send_tg(msg)
+        with open(STATE_FILE, 'w') as f:
+            json.dump({"final": float(final), "price": float(price)}, f)
+    else:
+        print(f"SKIP alert - zmiana {last} -> {final:.0f} za mała, 3 tury info zachowane w logu")
+
     return final
 
 if __name__ == "__main__":
