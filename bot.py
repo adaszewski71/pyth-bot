@@ -1,6 +1,5 @@
-# PYTH BOT v8.0 FINAL - 4 ENGINES OBJECTIVE
-# No ccxt - direct Binance API
-# TREND 30% + SMC 25% + VOLUME 25% + WYCKOFF 20%
+# PYTH BOT v8.1 FINAL FIX - 4 ENGINES OBJECTIVE
+# Fixed Binance WAF on GitHub Actions
 
 import pandas as pd
 import numpy as np
@@ -23,22 +22,38 @@ def load_config():
 def send_tg(msg):
     try:
         cfg = load_config()
-        token = cfg.get('telegram_token') or os.getenv('TELEGRAM_TOKEN')
-        chat_id = cfg.get('chat_id') or os.getenv('TELEGRAM_CHAT_ID')
+        token = cfg.get('telegram_token') or os.getenv("TELEGRAM_TOKEN")
+        chat_id = cfg.get('chat_id') or os.getenv("TELEGRAM_CHAT_ID")
         if not token or not chat_id: return
         url = f"https://api.telegram.org/bot{token}/sendMessage"
         requests.post(url, json={"chat_id": chat_id, "text": msg, "parse_mode": "Markdown"})
     except: pass
 
 def fetch_ohlcv(symbol=SYMBOL, interval=TIMEFRAME, limit=250):
-    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
-    r = requests.get(url, timeout=10)
-    data = r.json()
-    df = pd.DataFrame(data, columns=['ts','open','high','low','close','volume','ct','qav','trades','tbba','tbqa','ignore'])
-    for col in ['open','high','low','close','volume']:
-        df[col] = df[col].astype(float)
-    df['ts'] = pd.to_datetime(df['ts'], unit='ms')
-    return df
+    headers = {"User-Agent": "Mozilla/5.0"}
+    urls = [
+        f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}",
+        f"https://data-api.binance.vision/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
+    ]
+    last_error = None
+    for url in urls:
+        try:
+            r = requests.get(url, headers=headers, timeout=15)
+            data = r.json()
+            if isinstance(data, list) and len(data) > 10:
+                df = pd.DataFrame(data, columns=['ts','open','high','low','close','volume','ct','qav','trades','tbba','tbqa','ignore'])
+                for col in ['open','high','low','close','volume']:
+                    df[col] = df[col].astype(float)
+                df['ts'] = pd.to_datetime(df['ts'], unit='ms')
+                print(f"OK fetched from {url} rows={len(df)}")
+                return df
+            last_error = data
+        except Exception as e:
+            last_error = e
+            continue
+
+    print(f"FETCH FAILED: {last_error}")
+    raise Exception(f"Cannot fetch klines: {last_error}")
 
 def sma(series, period):
     return series.rolling(period).mean()
@@ -61,7 +76,6 @@ def engine_trend(df):
     ma50 = sma(df['close'], 50).iloc[-1]
     ma200 = sma(df['close'], 200).iloc[-1]
     rsi_val = rsi(df['close']).iloc[-1]
-    bb_low, _, _ = bollinger(df['close'])
 
     score = 50
     if price < ma200: score -= 30
@@ -80,7 +94,6 @@ def engine_trend(df):
 
 def engine_smc(df):
     lows = df['low'].rolling(3).min()
-    highs = df['high'].rolling(3).max()
     bos_bull = df['low'].iloc[-1] > lows.iloc[-3]
     fvg_up = df['high'].iloc[-3] < df['low'].iloc[-1]
 
@@ -114,7 +127,7 @@ def engine_volume(df):
 
 def engine_wyckoff(df):
     price = df['close'].iloc[-1]
-    bb_low, bb_up, _ = bollinger(df['close'])
+    bb_low, _, _ = bollinger(df['close'])
     bb_low_val = bb_low.iloc[-1]
     near_low = price <= bb_low_val * 1.015
     vol_low = df['volume'].iloc[-1] < df['volume'].rolling(20).mean().iloc[-1] * 0.7
@@ -149,7 +162,7 @@ def analyze():
     elif final < 75: sig = "BUY SETUP 65/100"
     else: sig = "HARD BUY 90/100"
 
-    msg = f"""PYTH v8.0 ${price:.4f} - {sig}
+    msg = f"""PYTH v8.1 ${price:.4f} - {sig}
 FINAL: {final:.0f}/100
 
 1 TREND 30% {s1}/100 {b1}
@@ -168,7 +181,7 @@ SL close 4h < $0.071
 Time {datetime.now().strftime('%Y-%m-%d %H:%M')}
 """
     print(msg)
-    # send_tg(msg) # odkomentuj jeśli chcesz TG
+    send_tg(msg)
     return final
 
 if __name__ == "__main__":
