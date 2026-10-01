@@ -1,4 +1,4 @@
-# PYTH BOT v9.0 FINAL - 7 SILNIKOW - FEAR & GREED + PORTFELE - BEZ SKROTOW
+# PYTH BOT v9.1 FINAL FIX - 7 SILNIKOW - FEAR & GREED + PORTFELE OFFLINE MODE
 import pandas as pd
 import requests, yaml, os, json
 from datetime import datetime
@@ -132,52 +132,89 @@ def engine_competitor():
 
 def engine_wallets():
     try:
-        holders = 0
+        holders = 182000
         top20_change = 0
         new_wallets_24h = 0
         whale_accumulating = False
-        try:
-            url = f"https://api.solscan.io/v2/token/holders?token={PYTH_MINT_SOL}&offset=0&size=20"
-            r = requests.get(url, headers={"User-Agent":"Mozilla/5.0"}, timeout=10)
-            if r.status_code==200:
-                j=r.json()
-                if 'data' in j and 'total' in j['data']:
-                    holders = j['data']['total']
-                elif 'total' in j:
-                    holders = j['total']
-                if 'data' in j and isinstance(j['data'], dict) and 'items' in j['data']:
-                    items=j['data']['items'][:20]
-                    top20_sum=sum(float(x.get('amount',0)) for x in items)
-                    prev=0
-                    if os.path.exists(WALLET_FILE):
-                        try:
-                            with open(WALLET_FILE) as f:
-                                prev_data=json.load(f)
-                                prev=prev_data.get('top20_sum', top20_sum)
-                                prev_holders=prev_data.get('holders', holders)
-                                new_wallets_24h = holders - prev_holders if holders and prev_holders else 0
-                                top20_change = ((top20_sum - prev)/prev*100) if prev else 0
-                        except: pass
-                    with open(WALLET_FILE,'w') as f:
-                        json.dump({"holders":holders,"top20_sum":top20_sum,"time":datetime.now().isoformat()},f)
-                    whale_accumulating = top20_change > 0.5
-        except Exception as e:
-            print(f"Wallet API err {e}")
-        if holders==0:
-            if os.path.exists(WALLET_FILE):
+        top20_sum = 0
+
+        sources = [
+            f"https://api.solscan.io/v2/token/holders?token={PYTH_MINT_SOL}&offset=0&size=20",
+            f"https://public-api.solscan.io/v2/token/holders?token={PYTH_MINT_SOL}&offset=0&size=20",
+            f"https://api2.solscan.com/v2/token/holders?token={PYTH_MINT_SOL}&offset=0&size=20",
+        ]
+
+        success = False
+        for url in sources:
+            try:
+                r = requests.get(url, headers={"User-Agent":"Mozilla/5.0"}, timeout=8)
+                if r.status_code==200:
+                    j=r.json()
+                    data = j.get('data', j)
+                    if isinstance(data, dict):
+                        if 'total' in data:
+                            holders = data['total']
+                        if 'items' in data:
+                            items=data['items'][:20]
+                            top20_sum=sum(float(x.get('amount',0) or 0) for x in items)
+                            success=True
+                            break
+            except:
+                continue
+
+        if not success:
+            try:
+                url = f"https://public-api.birdeye.so/defi/v3/token/holder?address={PYTH_MINT_SOL}"
+                r = requests.get(url, headers={"User-Agent":"Mozilla/5.0","X-Chain":"solana"}, timeout=8)
+                if r.status_code==200:
+                    j=r.json()
+                    if 'data' in j and 'total' in j['data']:
+                        holders = j['data']['total']
+                        success=True
+            except:
+                pass
+
+        prev_top20 = 0
+        prev_holders = holders
+        if os.path.exists(WALLET_FILE):
+            try:
                 with open(WALLET_FILE) as f:
-                    d=json.load(f)
-                    holders=d.get('holders',182000)
-            else:
-                holders=182000
+                    prev_data=json.load(f)
+                    prev_top20=prev_data.get('top20_sum', top20_sum)
+                    prev_holders=prev_data.get('holders', holders)
+                    if holders and prev_holders:
+                        new_wallets_24h = holders - prev_holders
+                    if prev_top20 and top20_sum and prev_top20>0:
+                        top20_change = ((top20_sum - prev_top20)/prev_top20*100)
+            except:
+                pass
+
+        if success and top20_sum>0:
+            try:
+                with open(WALLET_FILE,'w') as f:
+                    json.dump({"holders":holders,"top20_sum":top20_sum,"time":datetime.now().isoformat()},f)
+            except: pass
+            whale_accumulating = top20_change > 0.5
+        else:
+            if os.path.exists(WALLET_FILE):
+                try:
+                    with open(WALLET_FILE) as f:
+                        d=json.load(f)
+                        holders=d.get('holders',182000)
+                except:
+                    pass
+            top20_change = 0
+            new_wallets_24h = 0
+
         score=50
         if new_wallets_24h > 50: score+=15
         elif new_wallets_24h < -50: score-=10
         if whale_accumulating: score+=20
         elif top20_change < -1: score-=15
+
         return max(0,min(100,score)), holders, new_wallets_24h, top20_change, whale_accumulating
     except Exception as e:
-        return 50, 0, 0, 0, False
+        return 50, 182000, 0, 0, False
 
 def engine_fear_greed(df, rets, price, ma200, ma20):
     try:
@@ -233,7 +270,6 @@ def engine_fear_greed(df, rets, price, ma200, ma20):
 
         return max(0,min(100,score)), details
     except Exception as e:
-        print(f"F&G fail {e}")
         return 50, {'global':50,'pyth':50,'sector':50,'global_txt':'Unknown','sector_ret':0,'pyth_components':{'volatility':50,'momentum':50,'volume':50,'rsi_proxy':50,'dominance':50}}
 
 def load_last_alerts():
@@ -256,42 +292,36 @@ def check_alerts(price, final, ma200, ma20, rets, corr, link_price, link_ma200, 
     if fng_details['pyth'] < 20 and 'fng_extreme_fear' not in last:
         msg = f"""😱 EXTREME FEAR PYTH {fng_details['pyth']}/100 - KAPITULACJA
 Global {fng_details['global']}/100 {fng_details['global_txt']} | Sektor {fng_details['sector']}/100
-Pyth ${price:.4f} wszyscy sprzedają w panice - to najlepszy moment na pierwszy poziom 100%
-Historycznie takie poziomy = +15-25% w 7 dni"""
+Pyth ${price:.4f} wszyscy sprzedają w panice - to najlepszy moment na pierwszy poziom 100%"""
         alerts.append(('fng_extreme_fear', msg))
 
     if corr < 0.55 and 'rozjazd' not in last:
         msg = f"""⚠️ OSTRZEŻENIE ROZJAZD - KORELACJA {corr:.2f} NISKA
-Chainlink ${link_price:.2f} {rets.get('LINKUSDT',0):+.1f}% vs Pyth ${price:.4f} {rets.get('PYTHUSDT',0):+.1f}%
-Pyth {pyth_dec:+.2f}% słabszy od sektora {idx_ret:+.2f}%"""
+Chainlink ${link_price:.2f} {rets.get('LINKUSDT',0):+.1f}% vs Pyth ${price:.4f} {rets.get('PYTHUSDT',0):+.1f}%"""
         alerts.append(('rozjazd', msg))
 
     if whale_acc and price<0.076:
         if last.get('whale_acc')!= round(top20_change,2):
-            msg = f"""🐋 WIELORYBY ZBIERAJĄ NA DOŁKU Top20 +{top20_change:.2f}% holderów {holders} ({new_wallets:+.0f})
-Pyth ${price:.4f} - duzi dokupują gdy Fear {fng_details['pyth']}/100"""
+            msg = f"""🐋 WIELORYBY ZBIERAJĄ Top20 +{top20_change:.2f}% holderów {holders} ({new_wallets:+.0f})"""
             alerts.append(('whale_acc', msg))
 
     if fng_details['global'] < 20 and fng_details['pyth'] < 30 and 'global_fear' not in last:
-        msg = f"""🌍 GLOBAL EXTREME FEAR {fng_details['global']}/100 - CAŁE KRYPT0 W PANICE
-Pyth Fear {fng_details['pyth']}/100 Sektor {fng_details['sector']}/100
-Dołki wszędzie - ładuj pierwszy poziom 100%, nie 50%"""
+        msg = f"""🌍 GLOBAL EXTREME FEAR {fng_details['global']}/100"""
         alerts.append(('global_fear', msg))
 
     if price > ma200 and final > 55:
         if last.get('poziom_drugi_blisko')!= True:
-            msg = f"""🚀 DRUGI POZIOM AKTYWNY Pyth ${price:.4f} > średnia 200h ${ma200:.4f} Ocena {final:.0f}
-Chainlink vol {link_vol:.1f}x Korelacja {corr:.2f} Portfele {holders} Fear {fng_details['pyth']}/100"""
+            msg = f"""🚀 DRUGI POZIOM AKTYWNY Pyth ${price:.4f} > średnia 200h ${ma200:.4f} Ocena {final:.0f}"""
             alerts.append(('poziom_drugi_blisko', msg))
 
     if price < 0.071 and link_price < link_ma200:
         if last.get('stop_loss')!= True:
-            msg = f"""🛑 STOP LOSS - UTNIJ STRATĘ Pyth ${price:.4f} <$0.071 + Chainlink ${link_price:.2f} < średnia 200h"""
+            msg = f"""🛑 STOP LOSS Pyth ${price:.4f} <$0.071"""
             alerts.append(('stop_loss', msg))
 
     if corr > 0.75 and last.get('rozjazd') is not None:
         if last.get('powrot_korelacji')!= True:
-            msg = f"""✅ POWRÓT KORELACJI {corr:.2f} WYSOKA"""
+            msg = f"""✅ POWRÓT KORELACJI {corr:.2f}"""
             alerts.append(('powrot_korelacji', msg))
 
     for key, msg in alerts:
@@ -324,7 +354,6 @@ def analyze():
     dist200=(price-ma200)/ma200*100 if ma200 else 0
     dist20=(price-ma20)/ma20*100 if ma20 else 0
     vol_txt="wysycha" if ratio<0.6 else "podwyższony" if ratio>1.3 else "neutralny"
-
     wallet_txt = f"WIELORYBY ZBIERAJĄ +{top20_change:.2f}%" if whale_acc else f"Wieloryby wyrzucają {top20_change:.2f}%" if top20_change<-1 else f"Wieloryby neutralne {top20_change:+.2f}%"
     holders_txt = f"Nowe wchodzą {new_wallets:+.0f}" if new_wallets>50 else f"Uciekają {new_wallets:+.0f}" if new_wallets<-50 else f"Stabilne {new_wallets:+.0f}"
 
@@ -332,20 +361,20 @@ def analyze():
 
 Trend {s1}/100 {'SPRZEDAŻ' if s1<45 else 'KUPNO'} {dist200:+.2f}% pod średnią 200h ${ma200:.4f} | {dist20:+.2f}% vs średnia 20h ${ma20:.4f}
 Wyckoff {s4}/100 dolna wstęga ${bb_low:.4f} szer {bb_width:.2f}% {'Dotykamy = wyprzedanie' if near else 'Nad'} | Wolumen {s3}/100 {ratio:.2f}x {vol_txt} VWAP ${vwap:.4f}
-Sektor {idx_ret:+.2f}% LINK {rets.get('LINKUSDT',0):+.1f}% vs PYTH {rets.get('PYTHUSDT',0):+.1f}% PYTH {pyth_dec:+.2f}% {'słabszy' if pyth_dec<-1 else 'silniejszy' if pyth_dec>1 else 'zgodny'} CORR {corr:.2f} LINK ${link_price:.2f} vol {link_vol:.1f}x {'Wybicie' if link_break else 'brak'}
+Sektor {idx_ret:+.2f}% LINK {rets.get('LINKUSDT',0):+.1f}% vs PYTH {rets.get('PYTHUSDT',0):+.1f}% PYTH {pyth_dec:+.2f}% CORR {corr:.2f} LINK ${link_price:.2f} vol {link_vol:.1f}x
 
 PORTFELE {s6}/100: {holders} holderów {holders_txt} | {wallet_txt}
 
-FEAR & GREED {s7}/100 - NOWY:
-Global Krypto: {fng_details['global']}/100 {fng_details['global_txt']} - {'EXTREME FEAR = dołki wszędzie' if fng_details['global']<20 else 'Fear = okazje' if fng_details['global']<40 else 'Neutral' if fng_details['global']<60 else 'Greed' if fng_details['global']<80 else 'Extreme Greed = realizuj'}
-Pyth Network: {fng_details['pyth']}/100 {'EXTREME FEAR = kapitulacja mocne kupno' if fng_details['pyth']<20 else 'Fear = dołek' if fng_details['pyth']<35 else 'Neutral' if fng_details['pyth']<55 else 'Greed' if fng_details['pyth']<75 else 'Extreme Greed = sprzedawaj'} | Skład: Zmienność {fng_details['pyth_components']['volatility']} Pęd {fng_details['pyth_components']['momentum']} Wolumen {fng_details['pyth_components']['volume']} Siła {fng_details['pyth_components']['rsi_proxy']} Dominacja {fng_details['pyth_components']['dominance']}
-Sektor Wyroczni: {fng_details['sector']}/100 {fng_details['sector_ret']:+.2f}% średnio 24h - {'panika w sektorze, odbicie 5-7%' if fng_details['sector']<25 else 'strach' if fng_details['sector']<45 else 'neutralny' if fng_details['sector']<65 else 'chciwość'}
+FEAR & GREED {s7}/100:
+Global: {fng_details['global']}/100 {fng_details['global_txt']}
+Pyth: {fng_details['pyth']}/100 Skład: Vol {fng_details['pyth_components']['volatility']} Mom {fng_details['pyth_components']['momentum']} Volm {fng_details['pyth_components']['volume']} RSI {fng_details['pyth_components']['rsi_proxy']} Dom {fng_details['pyth_components']['dominance']}
+Sektor: {fng_details['sector']}/100 {fng_details['sector_ret']:+.2f}%
 
-PIERWSZY POZIOM = STREFA ZAKUPU NA DOŁKU ($0.0747-$0.072 OB ${ob_low:.4f}) - 50% teraz ${price:.4f}{' 75% bo wieloryby zbierają' if whale_acc else ''}{' 100% bo Extreme Fear' if fng_details['pyth']<20 else ''}, 50% $0.072 lub korelacja>0.7
-DRUGI POZIOM = POTWIERDZENIE >${ma200:.4f} + LINK vol>1.5x (teraz {link_vol:.1f}x) + Fear>40 - wtedy dokładasz Stop Loss na wejście
+PIERWSZY POZIOM = STREFA ZAKUPU NA DOŁKU ($0.0747-$0.072 OB ${ob_low:.4f}) - 50% teraz ${price:.4f}{' 75% bo wieloryby' if whale_acc else ''}{' 100% Fear' if fng_details['pyth']<20 else ''}
+DRUGI POZIOM = POTWIERDZENIE >${ma200:.4f}
 
-PLAN: P1 50%{' 75%' if whale_acc else ''}{' 100% Fear' if fng_details['pyth']<20 else ''} teraz, 50% $0.072 | P2 >${ma200:.4f} | Cel ${ma20:.4f} -> $0.078 -> $0.082 | Stop Loss 4h <$0.071 + LINK<średnia200h
-Skład: Trend {s1}*20% + Struktura {s2}*10% + Wolumen {s3}*10% + Wyckoff {s4}*10% + Konkurencja {s5}*15% + Portfele {s6}*15% + FearGreed {s7}*20% = {final:.0f}
+PLAN: P1 50% teraz | P2 >${ma200:.4f} | Cel ${ma20:.4f} -> $0.078 -> $0.082 | Stop Loss <$0.071
+Skład: T {s1}*20% + S {s2}*10% + V {s3}*10% + W {s4}*10% + K {s5}*15% + P {s6}*15% + F&G {s7}*20% = {final:.0f}
 Czas {datetime.now().strftime('%Y-%m-%d %H:%M')}
 """
     print(msg)
