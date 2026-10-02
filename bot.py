@@ -34,7 +34,7 @@ def get_stoch(h,l,c,k=14):
 
 def get_atr(h,l,c,p=14):
     trs = [max(h[i]-l[i], abs(h[i]-c[i-1]), abs(l[i]-c[i-1])) for i in range(1,len(c))]
-    return sum(trs[-p:])/p if len(trs)>=p else sum(trs)/len(trs)
+    return sum(trs[-p:])/p if len(trs)>=p else sum(trs)/len(trs) if trs else 0.001
 
 def get_klines(limit=100):
     for url in [f"https://data-api.binance.vision/api/v3/klines?symbol=PYTHUSDT&interval=1h&limit={limit}", f"https://api.binance.com/api/v3/klines?symbol=PYTHUSDT&interval=1h&limit={limit}"]:
@@ -50,10 +50,11 @@ def get_coingecko_full():
         ids = "pyth-network,chainlink,redstone"
         r = requests.get(f"https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids={ids}&order=market_cap_desc&price_change_percentage=24h", timeout=10).json()
         d = {x['id']: x for x in r}
-        pyth = d['pyth-network']; link = d['chainlink']; red = d.get('redstone', {'current_price':3.5,'price_change_percentage_24h':-3.2,'market_cap':350_000_000,'fully_diluted_valuation':1_000_000_000,'total_volume':20_000_000})
+        pyth = d['pyth-network']; link = d['chainlink']
+        red = d.get('redstone', {'current_price':0.35,'price_change_percentage_24h':-3.2,'market_cap':350000000,'fully_diluted_valuation':1000000000,'total_volume':20000000})
         return pyth, link, red
     except:
-        return {'current_price':0.0767,'price_change_percentage_24h':-2.81,'market_cap':603482000,'fully_diluted_valuation':766330000,'total_volume':21812000}, {'current_price':14.5,'price_change_percentage_24h':-1.2,'market_cap':8500000000,'fully_diluted_valuation':14500000000,'total_volume':300000000}, {'current_price':0.35,'price_change_percentage_24h':-4.5,'market_cap':350000000,'fully_diluted_valuation':1000000000,'total_volume':20000000}
+        return {'current_price':0.0766,'price_change_percentage_24h':-2.94,'market_cap':603482000,'fully_diluted_valuation':766330000,'total_volume':21500000}, {'current_price':14.43,'price_change_percentage_24h':-0.01,'market_cap':10800000000,'fully_diluted_valuation':14500000000,'total_volume':300000000}, {'current_price':0.35,'price_change_percentage_24h':-3.2,'market_cap':350000000,'fully_diluted_valuation':1000000000,'total_volume':20000000}
 
 def get_funding():
     try: return float(requests.get("https://fapi.binance.com/fapi/v1/premiumIndex?symbol=PYTHUSDT",timeout=10).json().get('lastFundingRate',0.0001))*100
@@ -98,7 +99,7 @@ def analyze(force_report=False):
     rsi = get_rsi(closes); fg_val, fg_class = get_fear_greed()
     link_tvs, pyth_tvs, red_tvs, share = get_oracle_tvs()
 
-    ema9 = ema(closes,9); ema21 = ema(closes,21); ema50 = ema(closes,50); ema200 = ema(closes,200)
+    ema9 = ema(closes,9); ema21 = ema(closes,21); ema200 = ema(closes,200)
     ml, ms, mh = get_macd(closes)
     bb_up, _, bb_low = get_bollinger(closes)
     stoch = get_stoch(highs,lows,closes)
@@ -116,11 +117,14 @@ def analyze(force_report=False):
     elif rsi>70 and price>bb_up*0.99: score-=15
     if stoch>85: score-=15
     elif stoch>80: score-=8
+    elif stoch<20: score+=10
     if price>bb_up*0.99: score-=10
+    if price<bb_low*1.01: score+=10
     if funding>0.05: score-=20
     elif funding<-0.02: score+=15
     if fg_val<25: score+=15
     elif fg_val>75: score-=10
+
     score = max(0,min(100,score))
 
     if score>=80: decyzja="KUPUJ 🔥"
@@ -135,23 +139,20 @@ def analyze(force_report=False):
     if not (force_report or slot_header or score>=80 or score<=25 or fg_val<20 or fg_val>85):
         print(f"[{now_str}] cicho {score}"); sys.exit(0)
 
-    header = f"🔥 *TEST v9.5 vs KONK* " if force_report else (slot_header or f"🚨 *ALERT {score}/100*") + f" - {now_str}"
+    header = f"🔥 *TEST v9.5.2 FINAL*" if force_report else (slot_header or f"🚨 *ALERT {score}/100*") + f" - {now_str}"
     unlock_days = (datetime(2027,5,19,tzinfo=timezone.utc)-datetime.now(timezone.utc)).days
-    oi = get_oi()
+    oi = get_oi(); oi_usd = oi * price
 
-    # === NOWA TABELA PORÓWNAWCZA ===
     msg = f"{header}\n\n"
     msg += f"PYTH ${price:.4f} ({chg:+.2f}%) Mcap ${mcap/1e6:.0f}M FDV ${fdv/1e6:.0f}M\n"
-    msg += f"Vol ${vol/1e6:.1f}M OI {oi/1e6:.0f}M | TVS ${tvs:.2f}B\n\n"
-
+    msg += f"Supply 7.875B/10B | Vol ${vol/1e6:.1f}M OI ${oi_usd/1e6:.1f}M | TVS ${tvs:.2f}B\n\n"
     msg += f"*Oracle 24h:*\n"
     msg += f"LINK ${link['current_price']:.2f} ({link['price_change_percentage_24h']:+.2f}%) Mcap ${link['market_cap']/1e9:.1f}B\n"
     msg += f"PYTH ${pyth['current_price']:.4f} ({pyth['price_change_percentage_24h']:+.2f}%) Mcap ${pyth['market_cap']/1e6:.0f}M\n"
     msg += f"RED ${red['current_price']:.4f} ({red['price_change_percentage_24h']:+.2f}%) Mcap ${red['market_cap']/1e6:.0f}M\n"
-    diff_pyth_red = pyth['price_change_percentage_24h'] - red['price_change_percentage_24h']
-    diff_pyth_link = pyth['price_change_percentage_24h'] - link['price_change_percentage_24h']
-    msg += f"PYTH vs RED {diff_pyth_red:+.2f}% vs LINK {diff_pyth_link:+.2f}%\n\n"
-
+    diff_red = pyth['price_change_percentage_24h'] - red['price_change_percentage_24h']
+    diff_link = pyth['price_change_percentage_24h'] - link['price_change_percentage_24h']
+    msg += f"PYTH vs RED {diff_red:+.2f}% vs LINK {diff_link:+.2f}%\n\n"
     msg += f"*TA:* EMA9 ${ema9:.4f} EMA200 ${ema200:.4f} {'🟢 nad' if price>ema200*1.002 else '🔴 pod' if price<ema200*0.998 else '⚪ przy'}\n"
     msg += f"MACD {mh:+.5f} {'🟢' if mh>0 else '🔴'} RSI {rsi:.0f} Stoch {stoch:.0f} BB [{bb_low:.4f}-{bb_up:.4f}]\n"
     msg += f"F&G {fg_val} {fg_class} | Funding {funding:+.4f}% | Siła {score}/100\n"
