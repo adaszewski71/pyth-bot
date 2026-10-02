@@ -60,6 +60,38 @@ def get_funding():
     try: return float(requests.get("https://fapi.binance.com/fapi/v1/premiumIndex?symbol=PYTHUSDT",timeout=10).json().get('lastFundingRate',0.0001))*100
     except: return 0.01
 
+def get_funding_history():
+    try:
+        r = requests.get("https://fapi.binance.com/fapi/v1/fundingRate?symbol=PYTHUSDT&limit=90",timeout=10).json()
+        rates = [float(x['fundingRate'])*100 for x in r]
+        if not rates: return None
+        now = rates[-1]
+        avg24 = sum(rates[-3:])/3 if len(rates)>=3 else now
+        avg7d = sum(rates[-21:])/21 if len(rates)>=21 else sum(rates)/len(rates)
+        avg30d = sum(rates)/len(rates)
+        return now, avg24, avg7d, avg30d
+    except:
+        return None
+
+def get_price_dynamics():
+    try:
+        for base in ["https://data-api.binance.vision/api/v3/klines", "https://api.binance.com/api/v3/klines"]:
+            try:
+                url = f"{base}?symbol=PYTHUSDT&interval=1d&limit=91"
+                r = requests.get(url,timeout=10).json()
+                closes = [float(x[4]) for x in r]
+                if len(closes)>=31:
+                    cur = closes[-1]
+                    def pct(days):
+                        if len(closes)<=days: return 0
+                        prev = closes[-1-days]
+                        return (cur-prev)/prev*100 if prev else 0
+                    return pct(1), pct(7), pct(30), pct(90)
+            except: pass
+        return None
+    except:
+        return None
+
 def get_tvs():
     try: return float(requests.get("https://api.llama.fi/protocol/pyth-network",timeout=10).json().get('tvl',3.589e9))/1e9
     except: return 3.589
@@ -94,7 +126,10 @@ def analyze(force_report=False):
     price = pyth['current_price']; chg = pyth['price_change_percentage_24h']
     mcap = pyth['market_cap']; fdv = pyth['fully_diluted_valuation']; vol = pyth['total_volume']
 
-    funding = get_funding(); tvs = get_tvs()
+    funding = get_funding()
+    fh = get_funding_history()
+    pd = get_price_dynamics()
+    tvs = get_tvs()
     closes, volumes, highs, lows = get_klines()
     rsi = get_rsi(closes); fg_val, fg_class = get_fear_greed()
     link_tvs, pyth_tvs, red_tvs, share = get_oracle_tvs()
@@ -166,7 +201,7 @@ def analyze(force_report=False):
     if not (force_report or slot_header or score>=80 or score<=25 or fg_val<20 or fg_val>85):
         print(f"[{now_str}] cicho {score}"); sys.exit(0)
 
-    header = f"🔥 *TEST v9.5.3 FINAL*" if force_report else (slot_header or f"🚨 *ALERT {score}/100*") + f" - {now_str}"
+    header = f"🔥 *TEST v9.5.4 FINAL*" if force_report else (slot_header or f"🚨 *ALERT {score}/100*") + f" - {now_str}"
     unlock_days = (datetime(2027,5,19,tzinfo=timezone.utc)-datetime.now(timezone.utc)).days
     oi = get_oi(); oi_usd = oi * price
 
@@ -179,10 +214,25 @@ def analyze(force_report=False):
         dol_typ = f"CZYSTY DÓŁ - cały sektor leci razem"
     elif score <= 35 and rsi > 65:
         dol_typ = f"FAŁSZYWA SPRZEDAŻ - score niski przez wykupienie (RSI {rsi:.0f} Stoch {stoch:.0f}), nie trend"
-    elif score >= 65 and rsi < 35:
-        dol_typ = f"FAŁSZYWE KUPNO? - sprawdź wolumen"
     else:
         dol_typ = "Neutralny"
+
+    # funding dynamika
+    if fh:
+        now_f, f24, f7, f30 = fh
+        def arrow(a,b):
+            d=a-b
+            if abs(d)<0.002: return "→"
+            return "↓" if d<-0.01 else "↑" if d>0.01 else ("↓" if d<0 else "↑")
+        funding_line = f"Funding {now_f:+.4f}% (24h {f24:+.4f}% {arrow(now_f,f24)} | 7d {f7:+.4f}% {arrow(now_f,f7)} | 30d {f30:+.4f}% {arrow(now_f,f30)})"
+    else:
+        funding_line = f"Funding {funding:+.4f}%"
+
+    if pd:
+        p1,p7,p30,p90 = pd
+        price_dyn = f"PYTH dyn: 24h {p1:+.1f}% | 7d {p7:+.1f}% | 30d {p30:+.1f}% | 90d {p90:+.1f}%"
+    else:
+        price_dyn = ""
 
     msg = f"{header}\n\n"
     msg += f"PYTH ${price:.4f} ({chg:+.2f}%) Mcap ${mcap/1e6:.0f}M FDV ${fdv/1e6:.0f}M\n"
@@ -194,7 +244,9 @@ def analyze(force_report=False):
     msg += f"PYTH vs RED {diff_red:+.2f}% vs LINK {diff_link:+.2f}% - {dol_typ}\n\n"
     msg += f"*TA:* EMA9 ${ema9:.4f} EMA200 ${ema200:.4f} {'🟢 nad' if price>ema200*1.002 else '🔴 pod' if price<ema200*0.998 else '⚪ przy'}\n"
     msg += f"MACD {mh:+.5f} {'🟢' if mh>0 else '🔴'} RSI {rsi:.0f} Stoch {stoch:.0f} BB [{bb_low:.4f}-{bb_up:.4f}]\n"
-    msg += f"F&G {fg_val} {fg_class} | Funding {funding:+.4f}% | Siła {score}/100\n"
+    msg += f"F&G {fg_val} {fg_class} | {funding_line} | Siła {score}/100\n"
+    if price_dyn:
+        msg += f"{price_dyn}\n"
     msg += f"TVS: LINK ${link_tvs:.0f}B | PYTH ${pyth_tvs:.1f}B ({share:.1f}%) | RED ${red_tvs:.1f}B\n\n"
     msg += f"*DLACZEGO {score}/100?*\n"
     for r in reasons:
