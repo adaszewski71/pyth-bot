@@ -32,10 +32,6 @@ def get_stoch(h,l,c,k=14):
     hh = max(h[-k:]); ll = min(l[-k:])
     return 50 if hh==ll else (c[-1]-ll)/(hh-ll)*100
 
-def get_atr(h,l,c,p=14):
-    trs = [max(h[i]-l[i], abs(h[i]-c[i-1]), abs(l[i]-c[i-1])) for i in range(1,len(c))]
-    return sum(trs[-p:])/p if len(trs)>=p else sum(trs)/len(trs) if trs else 0.001
-
 def get_klines(limit=100):
     for url in [f"https://data-api.binance.vision/api/v3/klines?symbol=PYTHUSDT&interval=1h&limit={limit}", f"https://api.binance.com/api/v3/klines?symbol=PYTHUSDT&interval=1h&limit={limit}"]:
         try:
@@ -87,46 +83,32 @@ def get_oi():
 def get_breakout_chance(price, rsi, stoch, funding, diff_red, diff_link, ema9, ema21, bb_up, vol, oi_usd):
     score = 30
     reasons_b = []
-    # 1. Funding
     if funding <= 0.02:
         score+=25; reasons_b.append(f"Funding niski {funding:.4f}% +25")
     elif funding <= 0.04:
         score+=10; reasons_b.append(f"Funding ok {funding:.4f}% +10")
     else:
         score-=20; reasons_b.append(f"Funding wysoki {funding:.4f}% -20")
-
-    # 2. Trend
     if price > ema9 > ema21:
         score+=15; reasons_b.append("Trend EMA9>EMA21 +15")
     elif price < ema9:
         score-=10; reasons_b.append("Pod EMA9 -10")
-
-    # 3. RSI strefa breakout
     if 58 <= rsi <= 71:
         score+=20; reasons_b.append(f"RSI {rsi:.0f} w strefie wybicia +20")
     elif rsi > 75:
         score-=15; reasons_b.append(f"RSI {rsi:.0f} przegrzany -15")
     elif rsi < 50:
         score-=10; reasons_b.append(f"RSI {rsi:.0f} słaby -10")
-
-    # 4. Rotacja z RED
     if diff_red > 0:
         score+=15; reasons_b.append(f"PYTH > RED {diff_red:+.2f}% +15 rotacja")
     else:
         score-=10; reasons_b.append(f"PYTH < RED {diff_red:+.2f}% -10")
-
-    # 5. Bliskość BB
     if bb_up*0.99 <= price <= bb_up*1.01:
         score+=10; reasons_b.append(f"Przy BB górnej {bb_up:.4f} +10")
     elif price > bb_up*1.01:
         score-=5; reasons_b.append("Nad BB -5 fake risk")
-
-    # 6. OI vs Vol
     if oi_usd > vol*2.5:
         score+=10; reasons_b.append(f"OI ${oi_usd/1e6:.0f}M > Vol x2.5 +10 budowa pozycji")
-    else:
-        reasons_b.append(f"OI/Vol niskie - brak budowy")
-
     score = max(0,min(100,score))
     return score, reasons_b
 
@@ -139,85 +121,89 @@ def analyze(force_report=False):
     pyth, link, red = get_coingecko_full()
     price = pyth['current_price']; chg = pyth['price_change_percentage_24h']
     mcap = pyth['market_cap']; fdv = pyth['fully_diluted_valuation']; vol = pyth['total_volume']
-
     funding = get_funding(); tvs = get_tvs()
     closes, volumes, highs, lows = get_klines()
     rsi = get_rsi(closes); fg_val, fg_class = get_fear_greed()
     link_tvs, pyth_tvs, red_tvs, share = get_oracle_tvs()
-
     ema9 = ema(closes,9); ema21 = ema(closes,21); ema200 = ema(closes,200)
     ml, ms, mh = get_macd(closes)
     bb_up, _, bb_low = get_bollinger(closes)
     stoch = get_stoch(highs,lows,closes)
 
-    reasons = []
-    score = 50
+    reasons = []; score = 50
     if price > ema9 > ema21:
         score+=10; reasons.append(f"Trend +10: cena > EMA9 ${ema9:.4f} > EMA21")
     elif price < ema9 < ema21:
         score-=10; reasons.append(f"Trend -10: cena < EMA9 < EMA21, spadkowy")
     else:
         reasons.append(f"Trend 0: EMA9 ${ema9:.4f} vs EMA21 ${ema21:.4f}")
-
     if price > ema200*1.002:
         score+=8; reasons.append(f"Trend +8: nad EMA200 ${ema200:.4f}")
     elif price < ema200*0.998:
         score-=8; reasons.append(f"Trend -8: pod EMA200 ${ema200:.4f} = główny opór")
     else:
         reasons.append(f"Trend 0: przy EMA200 ${ema200:.4f}")
-
     if mh>0 and ml>ms:
         score+=10; reasons.append(f"MACD +10: {mh:+.5f} bycze")
     elif mh<0:
         score-=10; reasons.append(f"MACD -10: {mh:+.5f} niedźwiedzie")
-
     if rsi<30 and price<bb_low:
         score+=15; reasons.append(f"Wyckoff +15: RSI {rsi:.0f} + dolna BB {bb_low:.4f} = wyprzedanie")
     elif rsi>70 and price>bb_up*0.99:
         score-=15; reasons.append(f"Wyckoff -15: RSI {rsi:.0f} + górna BB {bb_up:.4f} = wykupienie")
-
     if stoch>85:
         score-=15; reasons.append(f"Stoch -15: {stoch:.0f} max wykupienie")
     elif stoch>80:
         score-=8; reasons.append(f"Stoch -8: {stoch:.0f} wykupienie")
     elif stoch<20:
         score+=10; reasons.append(f"Stoch +10: {stoch:.0f} wyprzedanie")
-
     if price>bb_up*0.99:
         score-=10; reasons.append(f"BB -10: cena przy górnej {bb_up:.4f}")
     if price<bb_low*1.01:
         score+=10; reasons.append(f"BB +10: cena przy dolnej {bb_low:.4f}")
-
     if funding>0.05:
         score-=20; reasons.append(f"Funding -20: {funding:.4f}% przegrzany")
     elif funding<-0.02:
         score+=15; reasons.append(f"Funding +15: {funding:.4f}% shorty")
-
     if fg_val<25:
         score+=15; reasons.append(f"F&G +15: {fg_val} strach = okazja")
     elif fg_val>75:
         score-=10; reasons.append(f"F&G -10: {fg_val} chciwość = ryzyko")
-
     score = max(0,min(100,score))
+
+    # breakout calc
+    oi = get_oi(); oi_usd = oi * price
+    diff_red = pyth['price_change_percentage_24h'] - red['price_change_percentage_24h']
+    diff_link = pyth['price_change_percentage_24h'] - link['price_change_percentage_24h']
+    breakout, breakout_reasons = get_breakout_chance(price, rsi, stoch, funding, diff_red, diff_link, ema9, ema21, bb_up, vol, oi_usd)
+
+    # BB breakout detection
+    bb_breakout = price >= bb_up * 0.999
+    bb_breakdown = price <= bb_low * 1.001
 
     if score>=80: decyzja="KUPUJ 🔥"
     elif score>=60: decyzja="Można kupować ✅"
     elif score<=30: decyzja="SPRZEDAJ ⚠️"
     else: decyzja="CZEKAJ ➡️"
 
+    if bb_breakout and breakout>=70:
+        decyzja = f"🚀 BREAKOUT BB ${bb_up:.4f} - {decyzja}"
+    if bb_breakdown:
+        decyzja = f"💥 BREAKDOWN BB ${bb_low:.4f} - {decyzja}"
+
     now_str = datetime.now().strftime("%d.%m %H:%M")
     utc_hour = datetime.now(timezone.utc).hour
     slots = {5:"☀️ Poranny 7:00",13:"🌤️ Popołudniowy 15:00",19:"🌙 Wieczorny 21:00"}
     slot_header = slots.get(utc_hour)
-    if not (force_report or slot_header or score>=80 or score<=25 or fg_val<20 or fg_val>85):
-        print(f"[{now_str}] cicho {score}"); sys.exit(0)
 
-    header = f"🔥 *TEST v9.6 BREAKOUT*" if force_report else (slot_header or f"🚨 *ALERT {score}/100*") + f" - {now_str}"
+    # NIE zmieniam progów, ale dodaję force na BB breakout
+    is_bb_alert = bb_breakout or bb_breakdown
+    if not (force_report or slot_header or score>=80 or score<=25 or fg_val<20 or fg_val>85 or is_bb_alert):
+        print(f"[{now_str}] cicho {score} | breakout {breakout}%"); sys.exit(0)
+
+    header = f"🔥 *TEST v9.7 BB+BREAKOUT*" if force_report else (f"🚀 *BB BREAKOUT {score}/100*" if is_bb_alert else (slot_header or f"🚨 *ALERT {score}/100*")) + f" - {now_str}"
+
     unlock_days = (datetime(2027,5,19,tzinfo=timezone.utc)-datetime.now(timezone.utc)).days
-    oi = get_oi(); oi_usd = oi * price
-
-    diff_red = pyth['price_change_percentage_24h'] - red['price_change_percentage_24h']
-    diff_link = pyth['price_change_percentage_24h'] - link['price_change_percentage_24h']
 
     if chg < -2 and diff_link < -2:
         dol_typ = f"BRUDNY DÓŁ - ktoś wywala PYTH ({diff_link:+.2f}% vs LINK)"
@@ -225,14 +211,11 @@ def analyze(force_report=False):
         dol_typ = f"CZYSTY DÓŁ - cały sektor leci"
     elif score <= 35 and rsi > 65:
         dol_typ = f"FAŁSZYWA SPRZEDAŻ - score niski przez wykupienie (RSI {rsi:.0f})"
-    elif score >= 65 and rsi < 35:
-        dol_typ = f"FAŁSZYWE KUPNO?"
     else:
         dol_typ = "Neutralny"
 
-    breakout, breakout_reasons = get_breakout_chance(price, rsi, stoch, funding, diff_red, diff_link, ema9, ema21, bb_up, vol, oi_usd)
-    if breakout >= 70: br_txt = f"🚀 {breakout}% WYSOKA szansa"
-    elif breakout >= 45: br_txt = f"⚡ {breakout}% średnia szansa"
+    if breakout >= 70: br_txt = f"🚀 {breakout}% WYSOKA"
+    elif breakout >= 45: br_txt = f"⚡ {breakout}% średnia"
     else: br_txt = f"💤 {breakout}% niska"
 
     msg = f"{header}\n\n"
@@ -247,16 +230,15 @@ def analyze(force_report=False):
     msg += f"MACD {mh:+.5f} {'🟢' if mh>0 else '🔴'} RSI {rsi:.0f} Stoch {stoch:.0f} BB [{bb_low:.4f}-{bb_up:.4f}]\n"
     msg += f"F&G {fg_val} {fg_class} | Funding {funding:+.4f}% | Siła {score}/100\n"
     msg += f"TVS: LINK ${link_tvs:.0f}B | PYTH ${pyth_tvs:.1f}B ({share:.1f}%) | RED ${red_tvs:.1f}B\n"
-    msg += f"BREAKOUT: {br_txt}\n\n"
+    msg += f"BREAKOUT: {br_txt} {'🔥 PRZEBICIE BB!' if bb_breakout else ''}\n\n"
     msg += f"*DLACZEGO {score}/100?*\n"
-    for r in reasons:
-        msg += f"- {r}\n"
+    for r in reasons: msg += f"- {r}\n"
     msg += f"\n*DLACZEGO BREAKOUT {breakout}%?*\n"
-    for rb in breakout_reasons:
-        msg += f"- {rb}\n"
+    for rb in breakout_reasons: msg += f"- {rb}\n"
     msg += f"\nWniosek: *{decyzja}* | Unlock {unlock_days}d"
 
     print(msg); send_telegram(msg)
 
 if __name__ == "__main__":
-    analyze(force_report=True)
+    is_test = "--test" in sys.argv
+    analyze(force_report=is_test)
