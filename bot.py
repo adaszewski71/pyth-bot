@@ -259,4 +259,4 @@ def analyze(force_report=False):
     print(msg); send_telegram(msg)
 
 if __name__ == "__main__":
-    analyze(force_report=False)
+    analyze(force_report=True)
