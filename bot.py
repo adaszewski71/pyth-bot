@@ -61,34 +61,34 @@ def get_funding():
     except: return 0.01
 
 def get_funding_history():
-    try:
-        r = requests.get("https://fapi.binance.com/fapi/v1/fundingRate?symbol=PYTHUSDT&limit=90",timeout=10).json()
-        rates = [float(x['fundingRate'])*100 for x in r]
-        if not rates: return None
-        now = rates[-1]
-        avg24 = sum(rates[-3:])/3 if len(rates)>=3 else now
-        avg7d = sum(rates[-21:])/21 if len(rates)>=21 else sum(rates)/len(rates)
-        avg30d = sum(rates)/len(rates)
-        return now, avg24, avg7d, avg30d
-    except:
-        return None
+    # v9.5.5 - 3 bazy + fallback
+    for base in ["https://fapi.binance.com/fapi/v1/fundingRate", "https://fapi1.binance.com/fapi/v1/fundingRate", "https://fapi2.binance.com/fapi/v1/fundingRate"]:
+        try:
+            url = f"{base}?symbol=PYTHUSDT&limit=90"
+            r = requests.get(url,timeout=8).json()
+            if isinstance(r,list) and len(r)>=3:
+                rates = [float(x['fundingRate'])*100 for x in r]
+                now = rates[-1]
+                avg24 = sum(rates[-3:])/3
+                avg7d = sum(rates[-21:])/21 if len(rates)>=21 else sum(rates)/len(rates)
+                avg30d = sum(rates)/len(rates)
+                return now, avg24, avg7d, avg30d
+        except: pass
+    return None
 
 def get_price_dynamics():
+    # v9.5.5 - z Coingecko market_chart żeby zgadzało się z % 24h
     try:
-        for base in ["https://data-api.binance.vision/api/v3/klines", "https://api.binance.com/api/v3/klines"]:
-            try:
-                url = f"{base}?symbol=PYTHUSDT&interval=1d&limit=91"
-                r = requests.get(url,timeout=10).json()
-                closes = [float(x[4]) for x in r]
-                if len(closes)>=31:
-                    cur = closes[-1]
-                    def pct(days):
-                        if len(closes)<=days: return 0
-                        prev = closes[-1-days]
-                        return (cur-prev)/prev*100 if prev else 0
-                    return pct(1), pct(7), pct(30), pct(90)
-            except: pass
-        return None
+        r = requests.get("https://api.coingecko.com/api/v3/coins/pyth-network/market_chart?vs_currency=usd&days=90", timeout=10).json()
+        prices = [p[1] for p in r['prices']] # co ~1h
+        if len(prices)<100: return None
+        cur = prices[-1]
+        def pct(days):
+            idx = int(days*24) # ~24 pkt na dzień
+            if len(prices)<=idx: return 0
+            prev = prices[-1-idx]
+            return (cur-prev)/prev*100 if prev else 0
+        return pct(1), pct(7), pct(30), pct(90)
     except:
         return None
 
@@ -201,7 +201,7 @@ def analyze(force_report=False):
     if not (force_report or slot_header or score>=80 or score<=25 or fg_val<20 or fg_val>85):
         print(f"[{now_str}] cicho {score}"); sys.exit(0)
 
-    header = f"🔥 *TEST v9.5.4 FINAL*" if force_report else (slot_header or f"🚨 *ALERT {score}/100*") + f" - {now_str}"
+    header = f"🔥 *TEST v9.5.5 FINAL*" if force_report else (slot_header or f"🚨 *ALERT {score}/100*") + f" - {now_str}"
     unlock_days = (datetime(2027,5,19,tzinfo=timezone.utc)-datetime.now(timezone.utc)).days
     oi = get_oi(); oi_usd = oi * price
 
@@ -209,24 +209,27 @@ def analyze(force_report=False):
     diff_link = pyth['price_change_percentage_24h'] - link['price_change_percentage_24h']
 
     if chg < -2 and diff_link < -2:
-        dol_typ = f"BRUDNY DÓŁ - ktoś wywala PYTH ({diff_link:+.2f}% vs LINK). Nie all-in!"
+        dol_typ = f"BRUDNY DÓŁ - ktoś wywala PYTH ({diff_link:+.2f}% vs LINK)"
     elif chg < -2 and abs(diff_link) < 1:
-        dol_typ = f"CZYSTY DÓŁ - cały sektor leci razem"
+        dol_typ = f"CZYSTY DÓŁ - cały sektor leci"
     elif score <= 35 and rsi > 65:
-        dol_typ = f"FAŁSZYWA SPRZEDAŻ - score niski przez wykupienie (RSI {rsi:.0f} Stoch {stoch:.0f}), nie trend"
+        dol_typ = f"FAŁSZYWA SPRZEDAŻ - score przez wykupienie RSI {rsi:.0f}"
     else:
         dol_typ = "Neutralny"
 
-    # funding dynamika
     if fh:
         now_f, f24, f7, f30 = fh
         def arrow(a,b):
             d=a-b
             if abs(d)<0.002: return "→"
-            return "↓" if d<-0.01 else "↑" if d>0.01 else ("↓" if d<0 else "↑")
-        funding_line = f"Funding {now_f:+.4f}% (24h {f24:+.4f}% {arrow(now_f,f24)} | 7d {f7:+.4f}% {arrow(now_f,f7)} | 30d {f30:+.4f}% {arrow(now_f,f30)})"
+            return "↓" if d<0 else "↑"
+        def arrow2(a,b):
+            d=a-b
+            if abs(d)<0.002: return "→"
+            return "↓↓" if d<-0.01 else "↑↑" if d>0.01 else ("↓" if d<0 else "↑")
+        funding_line = f"Funding {now_f:+.4f}% (24h {f24:+.4f}% {arrow(now_f,f24)} | 7d {f7:+.4f}% {arrow2(now_f,f7)} | 30d {f30:+.4f}% {arrow2(now_f,f30)})"
     else:
-        funding_line = f"Funding {funding:+.4f}%"
+        funding_line = f"Funding {funding:+.4f}% (historia chwilowo niedostępna)"
 
     if pd:
         p1,p7,p30,p90 = pd
@@ -238,9 +241,9 @@ def analyze(force_report=False):
     msg += f"PYTH ${price:.4f} ({chg:+.2f}%) Mcap ${mcap/1e6:.0f}M FDV ${fdv/1e6:.0f}M\n"
     msg += f"Supply 7.875B/10B | Vol ${vol/1e6:.1f}M OI ${oi_usd/1e6:.1f}M | TVS ${tvs:.2f}B\n\n"
     msg += f"*Oracle 24h:*\n"
-    msg += f"LINK ${link['current_price']:.2f} ({link['price_change_percentage_24h']:+.2f}%) Mcap ${link['market_cap']/1e9:.1f}B\n"
-    msg += f"PYTH ${pyth['current_price']:.4f} ({pyth['price_change_percentage_24h']:+.2f}%) Mcap ${pyth['market_cap']/1e6:.0f}M\n"
-    msg += f"RED ${red['current_price']:.4f} ({red['price_change_percentage_24h']:+.2f}%) Mcap ${red['market_cap']/1e6:.0f}M\n"
+    msg += f"LINK ${link['current_price']:.2f} ({link['price_change_percentage_24h']:+.2f}%)\n"
+    msg += f"PYTH ${pyth['current_price']:.4f} ({pyth['price_change_percentage_24h']:+.2f}%)\n"
+    msg += f"RED ${red['current_price']:.4f} ({red['price_change_percentage_24h']:+.2f}%)\n"
     msg += f"PYTH vs RED {diff_red:+.2f}% vs LINK {diff_link:+.2f}% - {dol_typ}\n\n"
     msg += f"*TA:* EMA9 ${ema9:.4f} EMA200 ${ema200:.4f} {'🟢 nad' if price>ema200*1.002 else '🔴 pod' if price<ema200*0.998 else '⚪ przy'}\n"
     msg += f"MACD {mh:+.5f} {'🟢' if mh>0 else '🔴'} RSI {rsi:.0f} Stoch {stoch:.0f} BB [{bb_low:.4f}-{bb_up:.4f}]\n"
@@ -256,4 +259,4 @@ def analyze(force_report=False):
     print(msg); send_telegram(msg)
 
 if __name__ == "__main__":
-    analyze(force_report=True)
+    analyze(force_report=False)
