@@ -188,7 +188,7 @@ def analyze(force_report=False):
     msg += f"Vol {'🔥' if volumes[-1]>vol_sma*1.5 else '😴'} {volumes[-1]/vol_sma:.1f}x SMA20\n\n"
 
     msg += f"F&G {fg_val}/100 {fg_class}\n"
-    msg += f"Oracle: LINK ${link_tvs:.0f}B PYTH {share:.1f}% RED ${red_tvs:.0f}B\n"
+    msg += f"Oracle: LINK ${link_tvs:.0f}B | PYTH ${pyth_tvs:.1f}B ({share:.1f}%) | RED ${red_tvs:.1f}B\n"
     msg += f"Wyckoff: {wyckoff_txt} | Elliot: {elliot_txt}\n"
     msg += f"Funding {funding:+.4f}% | Siła {score}/100\n\n"
     msg += f"Wniosek: *{decyzja}* | Unlock za {unlock_days}d"
