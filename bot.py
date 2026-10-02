@@ -103,27 +103,54 @@ def analyze(force_report=False):
     ml, ms, mh = get_macd(closes)
     bb_up, _, bb_low = get_bollinger(closes)
     stoch = get_stoch(highs,lows,closes)
-    atr = get_atr(highs,lows,closes)
-    vol_sma = sum(volumes[-20:])/20
 
+    reasons = []
     score = 50
-    if price > ema9 > ema21: score+=10
-    elif price < ema9 < ema21: score-=10
-    if price > ema200*1.002: score+=8
-    elif price < ema200*0.998: score-=8
-    if mh>0 and ml>ms: score+=10
-    elif mh<0: score-=10
-    if rsi<30 and price<bb_low: score+=15
-    elif rsi>70 and price>bb_up*0.99: score-=15
-    if stoch>85: score-=15
-    elif stoch>80: score-=8
-    elif stoch<20: score+=10
-    if price>bb_up*0.99: score-=10
-    if price<bb_low*1.01: score+=10
-    if funding>0.05: score-=20
-    elif funding<-0.02: score+=15
-    if fg_val<25: score+=15
-    elif fg_val>75: score-=10
+    if price > ema9 > ema21:
+        score+=10; reasons.append(f"Trend +10: cena > EMA9 ${ema9:.4f} > EMA21")
+    elif price < ema9 < ema21:
+        score-=10; reasons.append(f"Trend -10: cena < EMA9 < EMA21, spadkowy")
+    else:
+        reasons.append(f"Trend 0: EMA9 ${ema9:.4f} vs EMA21 ${ema21:.4f}")
+
+    if price > ema200*1.002:
+        score+=8; reasons.append(f"Trend +8: nad EMA200 ${ema200:.4f}")
+    elif price < ema200*0.998:
+        score-=8; reasons.append(f"Trend -8: pod EMA200 ${ema200:.4f} = główny opór")
+    else:
+        reasons.append(f"Trend 0: przy EMA200 ${ema200:.4f}")
+
+    if mh>0 and ml>ms:
+        score+=10; reasons.append(f"MACD +10: {mh:+.5f} bycze")
+    elif mh<0:
+        score-=10; reasons.append(f"MACD -10: {mh:+.5f} niedźwiedzie")
+
+    if rsi<30 and price<bb_low:
+        score+=15; reasons.append(f"Wyckoff +15: RSI {rsi:.0f} + dolna BB {bb_low:.4f} = wyprzedanie")
+    elif rsi>70 and price>bb_up*0.99:
+        score-=15; reasons.append(f"Wyckoff -15: RSI {rsi:.0f} + górna BB {bb_up:.4f} = wykupienie")
+
+    if stoch>85:
+        score-=15; reasons.append(f"Stoch -15: {stoch:.0f} max wykupienie")
+    elif stoch>80:
+        score-=8; reasons.append(f"Stoch -8: {stoch:.0f} wykupienie")
+    elif stoch<20:
+        score+=10; reasons.append(f"Stoch +10: {stoch:.0f} wyprzedanie")
+
+    if price>bb_up*0.99:
+        score-=10; reasons.append(f"BB -10: cena przy górnej {bb_up:.4f}")
+    if price<bb_low*1.01:
+        score+=10; reasons.append(f"BB +10: cena przy dolnej {bb_low:.4f}")
+
+    if funding>0.05:
+        score-=20; reasons.append(f"Funding -20: {funding:.4f}% przegrzany")
+    elif funding<-0.02:
+        score+=15; reasons.append(f"Funding +15: {funding:.4f}% shorty")
+
+    if fg_val<25:
+        score+=15; reasons.append(f"F&G +15: {fg_val} strach = okazja")
+    elif fg_val>75:
+        score-=10; reasons.append(f"F&G -10: {fg_val} chciwość = ryzyko")
 
     score = max(0,min(100,score))
 
@@ -139,9 +166,23 @@ def analyze(force_report=False):
     if not (force_report or slot_header or score>=80 or score<=25 or fg_val<20 or fg_val>85):
         print(f"[{now_str}] cicho {score}"); sys.exit(0)
 
-    header = f"🔥 *TEST v9.5.2 FINAL*" if force_report else (slot_header or f"🚨 *ALERT {score}/100*") + f" - {now_str}"
+    header = f"🔥 *TEST v9.5.3 FINAL*" if force_report else (slot_header or f"🚨 *ALERT {score}/100*") + f" - {now_str}"
     unlock_days = (datetime(2027,5,19,tzinfo=timezone.utc)-datetime.now(timezone.utc)).days
     oi = get_oi(); oi_usd = oi * price
+
+    diff_red = pyth['price_change_percentage_24h'] - red['price_change_percentage_24h']
+    diff_link = pyth['price_change_percentage_24h'] - link['price_change_percentage_24h']
+
+    if chg < -2 and diff_link < -2:
+        dol_typ = f"BRUDNY DÓŁ - ktoś wywala PYTH ({diff_link:+.2f}% vs LINK). Nie all-in!"
+    elif chg < -2 and abs(diff_link) < 1:
+        dol_typ = f"CZYSTY DÓŁ - cały sektor leci razem"
+    elif score <= 35 and rsi > 65:
+        dol_typ = f"FAŁSZYWA SPRZEDAŻ - score niski przez wykupienie (RSI {rsi:.0f} Stoch {stoch:.0f}), nie trend"
+    elif score >= 65 and rsi < 35:
+        dol_typ = f"FAŁSZYWE KUPNO? - sprawdź wolumen"
+    else:
+        dol_typ = "Neutralny"
 
     msg = f"{header}\n\n"
     msg += f"PYTH ${price:.4f} ({chg:+.2f}%) Mcap ${mcap/1e6:.0f}M FDV ${fdv/1e6:.0f}M\n"
@@ -150,14 +191,15 @@ def analyze(force_report=False):
     msg += f"LINK ${link['current_price']:.2f} ({link['price_change_percentage_24h']:+.2f}%) Mcap ${link['market_cap']/1e9:.1f}B\n"
     msg += f"PYTH ${pyth['current_price']:.4f} ({pyth['price_change_percentage_24h']:+.2f}%) Mcap ${pyth['market_cap']/1e6:.0f}M\n"
     msg += f"RED ${red['current_price']:.4f} ({red['price_change_percentage_24h']:+.2f}%) Mcap ${red['market_cap']/1e6:.0f}M\n"
-    diff_red = pyth['price_change_percentage_24h'] - red['price_change_percentage_24h']
-    diff_link = pyth['price_change_percentage_24h'] - link['price_change_percentage_24h']
-    msg += f"PYTH vs RED {diff_red:+.2f}% vs LINK {diff_link:+.2f}%\n\n"
+    msg += f"PYTH vs RED {diff_red:+.2f}% vs LINK {diff_link:+.2f}% - {dol_typ}\n\n"
     msg += f"*TA:* EMA9 ${ema9:.4f} EMA200 ${ema200:.4f} {'🟢 nad' if price>ema200*1.002 else '🔴 pod' if price<ema200*0.998 else '⚪ przy'}\n"
     msg += f"MACD {mh:+.5f} {'🟢' if mh>0 else '🔴'} RSI {rsi:.0f} Stoch {stoch:.0f} BB [{bb_low:.4f}-{bb_up:.4f}]\n"
     msg += f"F&G {fg_val} {fg_class} | Funding {funding:+.4f}% | Siła {score}/100\n"
     msg += f"TVS: LINK ${link_tvs:.0f}B | PYTH ${pyth_tvs:.1f}B ({share:.1f}%) | RED ${red_tvs:.1f}B\n\n"
-    msg += f"Wniosek: *{decyzja}* | Unlock {unlock_days}d"
+    msg += f"*DLACZEGO {score}/100?*\n"
+    for r in reasons:
+        msg += f"- {r}\n"
+    msg += f"\nWniosek: *{decyzja}* | Unlock {unlock_days}d"
 
     print(msg); send_telegram(msg)
 
